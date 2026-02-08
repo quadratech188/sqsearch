@@ -1,0 +1,10 @@
+[package]
+name = "sqsearch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+indoc = "2.0.7"
+rusqlite = "0.38.0"
+thiserror = "2.0.18"
+walkdir = "2.5.0"
