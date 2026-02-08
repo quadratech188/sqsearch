@@ -1,4 +1,4 @@
-use std::{collections::HashMap, os::unix::{ffi::OsStrExt, fs::MetadataExt}, path};
+use std::{os::unix::fs::MetadataExt, path};
 
 use walkdir::WalkDir;
 
