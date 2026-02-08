@@ -42,23 +42,7 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
         ) WITHOUT ROWID;
 
         CREATE INDEX IF NOT EXISTS forwards_idx ON suffix_array (parent_inode, suffix);
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
-            name, tokenize = 'better_trigram', id
-        );
-
-        CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
-            INSERT INTO fts(id, name) VALUES (new.id, new.name);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
-            INSERT INTO fts(fts, id, name) VALUES('delete', old.id, old.name);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
-            INSERT INTO fts(fts, id, name) VALUES('delete', old.id, old.name);
-            INSERT INTO fts(id, name) VALUES (new.id, new.name);
-        END;
+        CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
 
         COMMIT;
     "})?;
@@ -126,15 +110,15 @@ pub fn prepare_query<'a>(tx: &'a rusqlite::Transaction<'a>, segments: &[&str])
 
     let mut params: Vec<String> = vec![];
 
+    /*
     let header = format!(
         "SELECT s{}.id FROM fts JOIN files AS s{} ON s{}.id = fts.id",
         segments.len() - 1, join_order[0], join_order[0]);
+    */
 
-    /*
     let header = format!(
         "SELECT s{}.id FROM suffix_array AS s{}",
         segments.len() - 1, join_order[0]);
-    */
 
     let joins = (1..segments.len())
         .map(|x| format!("suffix_array AS s{}", join_order[x]));
@@ -144,17 +128,20 @@ pub fn prepare_query<'a>(tx: &'a rusqlite::Transaction<'a>, segments: &[&str])
 
     let str_conds = (0..segments.len())
         .map(|x| {
+            /*
             if x == join_order[0] {
                 params.push(format!("%{}%", segments[x]));
                 return format!("fts.name LIKE ?")
             }
+            */
             params.push(segments[x].into());
             params.push(format!("{}\u{10FFFF}", segments[x]));
 
             format!("s{x}.suffix >= ? AND s{x}.suffix < ?")
         });
 
-    let first = iter::chain([header], joins).collect::<Vec<_>>().join(" JOIN ");
+    // Prevent query reordering with CROSS JOIN
+    let first = iter::chain([header], joins).collect::<Vec<_>>().join(" CROSS JOIN ");
     let second = iter::chain(parent_conds, str_conds).collect::<Vec<_>>().join(" AND ");
 
     let query = if second == "" {
