@@ -11,11 +11,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     db::prepare_db(&db)?;
 
     let args: Vec<_> = env::args().collect();
-    if args.len() > 1 && args[1] == "--index" {
+    if args.len() > 2 && args[1] == "--index" {
         let tx = db.transaction()?;
 
         let mut cnt = 0;
-        for entry in WalkDir::new("/mnt/data") {
+        for entry in WalkDir::new(args[2].clone()) {
             let entry = match entry {
                 Ok(e) => e,
                 Err(e) => {
@@ -26,12 +26,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let metadata = entry.metadata()?;
             let inode = metadata.ino();
-            let parent_inode = entry
+            let Some(parent) = entry
                 .path()
-                .parent()
-                .unwrap()
-                .metadata()?
-                .ino();
+                .parent() else {
+                continue
+            };
+
+            let parent_inode = parent.metadata()?.ino();
 
             db::insert(&tx, parent_inode, inode, entry.file_name().try_into()?)?;
             cnt += 1;
