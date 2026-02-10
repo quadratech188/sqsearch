@@ -17,11 +17,6 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     // conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "normal")?;
 
-    {
-        let _guard = unsafe {rusqlite::LoadExtensionGuard::new(conn)?};
-        unsafe {conn.load_extension("./better-trigram.so", None::<&str>)}?;
-    }
-
     conn.execute_batch(indoc! {"
         BEGIN;
 
