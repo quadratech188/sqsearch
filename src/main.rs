@@ -1,10 +1,12 @@
-use std::{env, os::unix::fs::MetadataExt, path};
+use std::{env, ops, os::unix::fs::MetadataExt, path};
 
 use walkdir::WalkDir;
 
 mod db;
+mod fanotify;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+
     let path = path::Path::new("./db.sqlite3");
     let mut db = rusqlite::Connection::open(path)?;
 
@@ -60,6 +62,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
         }
         tx.commit()?;
+    }
+
+    if args.len() > 2 && args[1] == "--watch" {
+        let e = fanotify::watch(&path::PathBuf::from(args[2].clone()), &mut |x| {
+            let _ = dbg!(x);
+            ops::ControlFlow::Continue(())
+        });
+
+        let _ = dbg!(e);
     }
 
     Ok(())

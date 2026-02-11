@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+errno = "0.3.14"
 indoc = "2.0.7"
+libc = "0.2.181"
 rusqlite = { version = "0.38.0", features = ["load_extension"] }
 thiserror = "2.0.18"
 walkdir = "2.5.0"
