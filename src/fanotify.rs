@@ -1,7 +1,6 @@
-use std::{ffi, fs, io::{BufReader, Read}, mem, ops, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, string, vec};
+use std::{ffi, fs, io::Read, mem, ops, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, string, vec};
 
-use errno::errno;
-use libc::{self, AT_FDCWD, fstat, newlocale};
+use libc::{self, AT_FDCWD, fstat};
 
 #[repr(C)]
 struct file_handle {

@@ -1,5 +1,5 @@
 
-use std::{fmt::format, iter};
+use std::iter;
 
 use indoc::indoc;
 
