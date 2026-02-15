@@ -8,7 +8,7 @@ mod watcher;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 
-    let path = path::Path::new("./db.sqlite3");
+    let path = path::Path::new("/home/quadratech/.local/share/sqsearch/db.sqlite3");
     let mut db = rusqlite::Connection::open(path)?;
 
     db::prepare_db(&db)?;
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let parent_inode = parent.metadata()?.ino();
 
-            db::insert(&tx, parent_inode, inode, entry.file_name().try_into()?)?;
+            db::create(&tx, parent_inode, inode, entry.file_name().try_into()?)?;
             cnt += 1;
             if cnt % 1000 == 0 {
                 println!("{} {}", cnt, entry.path().display());

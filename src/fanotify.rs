@@ -40,7 +40,7 @@ pub enum Event {
     },
     Delete {
         parent_inode: u64,
-        inode: u64
+        name: String
     },
     Move {
         old_parent_inode: u64,
@@ -128,26 +128,23 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
     }
 
     let Some(fid) = fid else {return Err(Error::BadData)};
-    let inode = stat_fid(fid)?.st_ino;
 
     let mut events = vec![];
 
     if metadata.mask & (libc::FAN_CREATE | libc::FAN_DELETE) != 0 {
         let Some(dfid) = dfid else {return Err(Error::BadData)};
 
-        let parent_inode = stat_fid(dfid)?.st_ino;
-
         if metadata.mask & libc::FAN_CREATE != 0 {
             events.push(Event::Create {
-                parent_inode,
-                inode,
+                parent_inode: stat_fid(dfid)?.st_ino,
+                inode: stat_fid(dfid)?.st_ino,
                 name: get_name(dfid)?
             });
         }
         if metadata.mask & libc::FAN_DELETE != 0 {
             events.push(Event::Delete {
-                parent_inode,
-                inode
+                parent_inode: stat_fid(dfid)?.st_ino,
+                name: get_name(dfid)?
             });
         }
     }
@@ -161,7 +158,7 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
             old_name: get_name(old_dfid)?,
             new_parent_inode: stat_fid(new_dfid)?.st_ino,
             new_name: get_name(new_dfid)?,
-            inode
+            inode: stat_fid(fid)?.st_ino
         });
     }
 

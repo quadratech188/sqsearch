@@ -8,7 +8,11 @@ pub enum Error {
     #[error("SQLite error: {0}")]
     SQLite(#[from] rusqlite::Error),
     #[error("Bad query:")]
-    BadQuery(Vec<String>)
+    BadQuery(Vec<String>),
+    #[error("File doesn't exist: {0}")]
+    NoFile(u64, String),
+    #[error("File already exists: {0}")]
+    DuplicateFile(u64, u64, String)
 }
 
 pub fn map_db_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error> {
@@ -25,10 +29,10 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY,
-            inode INTEGER,
             parent_inode INTEGER,
+            inode INTEGER,
             name TEXT,
-            UNIQUE(inode, parent_inode, name)
+            UNIQUE(parent_inode, name)
         );
 
         CREATE TABLE IF NOT EXISTS suffix_array (
@@ -48,19 +52,21 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn insert(tx: &rusqlite::Transaction, parent_inode: u64, inode: u64, name: &str)
+pub fn create(tx: &rusqlite::Transaction, parent_inode: u64, inode: u64, name: &str)
 -> Result<(), Error> {
     let mut file_insert = tx.prepare_cached(indoc! {"
-        INSERT INTO files(inode, parent_inode, name) VALUES(?1, ?2, ?3)
+        INSERT INTO files(parent_inode, inode, name) VALUES(?1, ?2, ?3)
         ON CONFLICT DO NOTHING
     "})?;
     // Let big inode values wrap around to negatives
-    let id = match file_insert.insert((inode as i64, parent_inode as i64, name)) {
-        Ok(x) => x,
-        // Already exists - return early
-        Err(rusqlite::Error::StatementChangedRows(0)) => return Ok(()),
-        Err(x) => return Err(x.into())
-    };
+    let id = file_insert.insert((parent_inode as i64, inode as i64, name))
+        .map_err(|e| {
+            match e {
+                rusqlite::Error::StatementChangedRows(0)
+                    => Error::DuplicateFile(parent_inode, inode, name.into()),
+                x => x.into()
+            }
+        })?;
 
     let mut suffix_insert = tx.prepare_cached(indoc! {"
         INSERT into suffix_array VALUES(?1, ?2, ?3, ?4)
@@ -68,6 +74,35 @@ pub fn insert(tx: &rusqlite::Transaction, parent_inode: u64, inode: u64, name: &
     for (i, _) in name.char_indices() {
         suffix_insert.execute((parent_inode as i64, inode as i64, id, &name[i..]))?;
     }
+    Ok(())
+}
+
+pub fn delete(tx: &rusqlite::Transaction, parent_inode: u64, name: &str)
+-> Result<(), Error> {
+    let mut delete_files = tx.prepare_cached(indoc! {"
+        DELETE FROM files WHERE
+            parent_inode = ?1
+            AND name = ?2
+        RETURNING rowid
+    "})?;
+
+    let id: i64 = delete_files.query_one(
+        (parent_inode as i64, name), |x| x.get(0))
+        .map_err(|e| {
+            match e {
+                rusqlite::Error::QueryReturnedNoRows
+                    => Error::NoFile(parent_inode, name.into()),
+                x => x.into()
+            }
+        })?;
+
+    let mut delete_suffixes = tx.prepare_cached(indoc! {"
+        DELETE FROM suffix_array WHERE
+            id = ?1
+    "})?;
+
+    delete_suffixes.execute((id,))?;
+
     Ok(())
 }
 

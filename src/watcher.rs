@@ -39,14 +39,16 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &Vec<fanotify::Event>)
 -> Result<(), Error> {
     let tx = db::map_db_err(conn.transaction())?;
 
+    dbg!(events);
     for event in events {
-        dbg!(event);
         match event {
             fanotify::Event::Create { parent_inode, inode, name } => {
-                db::insert(&tx, *parent_inode, *inode, name)?;
+                let e = db::create(&tx, *parent_inode, *inode, name);
+                dbg!(e);
             }
-            fanotify::Event::Delete { parent_inode, inode } => {
-                todo!();
+            fanotify::Event::Delete { parent_inode, name } => {
+                let e = db::delete(&tx, *parent_inode, name);
+                dbg!(e);
             }
             fanotify::Event::Move { old_parent_inode, old_name,
                 new_parent_inode, new_name, inode }
