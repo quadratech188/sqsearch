@@ -4,6 +4,7 @@ use walkdir::WalkDir;
 
 mod db;
 mod fanotify;
+mod watcher;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 
@@ -65,10 +66,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if args.len() > 2 && args[1] == "--watch" {
-        let e = fanotify::watch(&path::PathBuf::from(args[2].clone()), &mut |x| {
-            let _ = dbg!(x);
-            ops::ControlFlow::Continue(())
-        });
+        let path = path::PathBuf::from(args[2].clone());
+
+        let e = watcher::watch(&path, &mut db);
 
         let _ = dbg!(e);
     }

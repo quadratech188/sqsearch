@@ -11,6 +11,9 @@ pub enum Error {
     BadQuery(Vec<String>)
 }
 
+pub fn map_db_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error> {
+    Ok(x?)
+}
 
 pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 

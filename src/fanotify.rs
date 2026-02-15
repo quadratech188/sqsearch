@@ -29,7 +29,9 @@ pub enum Error {
     Mark(errno::Errno)
 }
 
-#[derive(Debug)]
+// FIXME: Use CString instead of String
+
+#[derive(Debug, Clone)]
 pub enum Event {
     Create {
         parent_inode: u64,
@@ -91,7 +93,6 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
     }
 
     let (metadata, n_ptr) = read_buffer!(&buffer, ptr, libc::fanotify_event_metadata);
-    dbg!(metadata);
     let next_event = ptr + metadata.event_len as usize;
     let mut ptr = n_ptr;
 
@@ -104,7 +105,6 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
     
     while ptr < next_event {
         let (header, _) = read_buffer!(&buffer, ptr, libc::fanotify_event_info_header);
-        dbg!(header.info_type);
         match header.info_type {
             libc::FAN_EVENT_INFO_TYPE_DFID_NAME => dfid
                 = Some(read_buffer!(buffer, ptr, libc::fanotify_event_info_fid).0),
@@ -177,7 +177,7 @@ where F: FnMut(Result<Vec<Event>, Error>) -> ops::ControlFlow<()> {
         | libc::FAN_UNLIMITED_QUEUE
         | libc::FAN_REPORT_FID
         | libc::FAN_REPORT_NAME
-        | libc::FAN_REPORT_TARGET_FID // We might not need this
+        | libc::FAN_REPORT_TARGET_FID
         | libc::FAN_REPORT_DIR_FID,
         libc::O_LARGEFILE as u32
     )};
