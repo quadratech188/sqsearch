@@ -8,9 +8,11 @@ use crate::{db, fanotify};
 pub enum Error {
     #[error("Messaging error")]
     Messaging,
-    #[error("fanotify error: {0}")]
+    #[error("Not a filesystem mount: {0}")]
+    BadPath(path::PathBuf),
+    #[error(transparent)]
     Fanotify(#[from] fanotify::Error),
-    #[error("DB error: {0}")]
+    #[error(transparent)]
     DB(#[from] db::Error)
 }
 
@@ -23,10 +25,12 @@ enum Message {
 fn handle_message(tx: &mpsc::Sender<Message>,
     msg: Result<Vec<fanotify::Event>, fanotify::Error>)
 -> Result<(), Error> {
-    let Ok(msg) = msg else {
-        // TODO: Log fanotify errors
-        let _ = dbg!(msg);
-        return Ok(())
+    let msg = match msg {
+        Ok(x) => x,
+        Err(e) => {
+            log::warn!("fanotify error: {}", e);
+            return Ok(())
+        }
     };
 
     tx.send(Message::Events(msg))

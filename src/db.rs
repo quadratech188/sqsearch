@@ -9,9 +9,9 @@ pub enum Error {
     SQLite(#[from] rusqlite::Error),
     #[error("Bad query:")]
     BadQuery(Vec<String>),
-    #[error("File doesn't exist: {0}")]
+    #[error("File doesn't exist: {1}")]
     NoFile(u64, String),
-    #[error("File already exists: {0}")]
+    #[error("File already exists: {2}")]
     DuplicateFile(u64, u64, String)
 }
 
@@ -21,7 +21,7 @@ pub fn map_db_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error> {
 
 pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 
-    // conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "normal")?;
 
     conn.execute_batch(indoc! {"
@@ -136,15 +136,19 @@ pub fn r#move(tx: &rusqlite::Transaction, old_parent_inode: u64, old_name: &str,
         RETURNING id
     "})?;
 
-    let id: i64 = update_file.query_one((new_parent_inode as i64, new_name,
-            old_parent_inode as i64, inode as i64, old_name), |x| x.get(0))
-        .map_err(|e| {
-            match e {
-                rusqlite::Error::QueryReturnedNoRows
-                    => Error::NoFile(old_parent_inode, old_name.into()),
-                x => x.into()
-            }
-        })?;
+    let id: i64 = match update_file.query_one((new_parent_inode as i64, new_name,
+            old_parent_inode as i64, inode as i64, old_name), |x| x.get(0)) {
+        Ok(x) => x,
+        Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) => {
+            // Something like touch a b; mv a b
+            // TODO: reuse suffixes of b
+            delete(tx, new_parent_inode, new_name)?;
+            return r#move(tx, old_parent_inode, old_name, new_parent_inode, new_name, inode);
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows)
+            => return Err(Error::NoFile(old_parent_inode, old_name.into())),
+        Err(x) => return Err(x.into())
+    };
 
     if old_name == new_name {
         reparent_suffixes(tx, new_parent_inode, id)
@@ -232,10 +236,6 @@ pub fn prepare_query<'a>(tx: &'a rusqlite::Transaction<'a>, segments: &[&str])
     else {
         format!("{first} WHERE {second}")
     };
-
-
-    dbg!(&query);
-    dbg!(&params);
 
     Ok((tx.prepare_cached(&query)?, params))
 }

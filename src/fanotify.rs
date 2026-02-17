@@ -1,6 +1,8 @@
 use std::{ffi, fs, io::Read, mem, ops, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, string, vec};
 
-use libc::{self, AT_FDCWD, fstat};
+use libc;
+
+use crate::db;
 
 #[repr(C)]
 struct file_handle {
@@ -15,17 +17,19 @@ unsafe extern "C" {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("Bad path: {0}")]
+    BadPath(path::PathBuf),
     #[error("Bad fanotify data")]
     BadData,
-    #[error("Internal error: {0}")]
+    #[error("From fanotify: {0}")]
     Internal(i32),
-    #[error("Error while parsing: {0}")]
+    #[error("While parsing: {0}")]
     Encoding(#[from] string::FromUtf8Error),
-    #[error("Error while probing filesystem: {0}")]
+    #[error("While probing filesystem: {0}")]
     ReadFS(errno::Errno),
-    #[error("Error while fanotify init: {0}")]
+    #[error("While fanotify init: {0}")]
     Init(errno::Errno),
-    #[error("Error while fanotify mark: {0}")]
+    #[error("While fanotify mark: {0}")]
     Mark(errno::Errno)
 }
 
@@ -51,17 +55,37 @@ pub enum Event {
     }
 }
 
-fn stat_fid(fid: &libc::fanotify_event_info_fid) -> Result<libc::stat, Error> {
-    // FIXME: Use the proper filesystem
-    // Probably expensive, we should get the fd on startup
-    let fd = unsafe {open_by_handle_at(AT_FDCWD, fid.handle.as_ptr() as *const file_handle,
+fn get_mount_fd(path: &path::Path) -> Result<libc::c_int, Error> {
+    let fp = unsafe {libc::setmntent(c"/etc/mtab".as_ptr(), c"r".as_ptr())};
+
+    let path = loop {
+        let mntent = unsafe {libc::getmntent(fp)};
+        if mntent.is_null() {break Err(Error::BadPath(path.into()))}
+        let mntent = unsafe {*mntent};
+
+        let dir = ffi::OsStr::from_bytes(unsafe {
+                ffi::CStr::from_ptr(mntent.mnt_dir)
+            }.to_bytes());
+
+        if dir == path.as_os_str() {break Ok(mntent.mnt_dir)}
+    }?;
+
+    let fd = unsafe {libc::open(path, libc::O_NOATIME, libc::O_PATH)};
+
+    unsafe {libc::endmntent(fp)};
+
+    Ok(fd)
+}
+
+fn stat_fid(mount_fd: libc::c_int, fid: &libc::fanotify_event_info_fid) -> Result<libc::stat, Error> {
+    let fd = unsafe {open_by_handle_at(mount_fd, fid.handle.as_ptr() as *const file_handle,
         libc::O_NOATIME
         | libc::O_PATH
     )};
     if fd < 0 {return Err(Error::ReadFS(errno::errno()))}
 
     let mut stat = mem::MaybeUninit::uninit();
-    let err = unsafe {fstat(fd, stat.as_mut_ptr())};
+    let err = unsafe {libc::fstat(fd, stat.as_mut_ptr())};
     if err < 0 {return Err(Error::ReadFS(errno::errno()))}
     let stat = unsafe {stat.assume_init()};
 
@@ -79,7 +103,7 @@ fn get_name(fid: &libc::fanotify_event_info_fid) -> Result<String, Error> {
     }
 }
 
-fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
+fn read(mount_fd: libc::c_int, buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
     macro_rules! read_buffer {
         ($buffer: expr, $ptr: expr, $typ: ty) => {{
             let slice: &[u8; size_of::<$typ>()] = $buffer[$ptr..$ptr + size_of::<$typ>()]
@@ -135,15 +159,23 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
         let Some(dfid) = dfid else {return Err(Error::BadData)};
 
         if metadata.mask & libc::FAN_CREATE != 0 {
+            let stat = match stat_fid(mount_fd, fid) {
+                Ok(x) => x,
+                // The file was already deleted, we don't care about it
+                Err(Error::ReadFS(errno::Errno(libc::ESTALE))) => return Ok(events),
+                Err(e) => return Err(e)
+            };
+
             events.push(Event::Create {
-                parent_inode: stat_fid(dfid)?.st_ino,
-                inode: stat_fid(dfid)?.st_ino,
+                parent_inode: stat_fid(mount_fd, dfid)?.st_ino,
+                inode: stat.st_ino,
                 name: get_name(dfid)?
             });
         }
+        // FIXME: Recursively delete files if the parent cannot be found
         if metadata.mask & libc::FAN_DELETE != 0 {
             events.push(Event::Delete {
-                parent_inode: stat_fid(dfid)?.st_ino,
+                parent_inode: stat_fid(mount_fd, dfid)?.st_ino,
                 name: get_name(dfid)?
             });
         }
@@ -152,13 +184,22 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
     if metadata.mask & libc::FAN_RENAME != 0 {
         let Some(old_dfid) = old_dfid else {return Err(Error::BadData)};
         let Some(new_dfid) = new_dfid else {return Err(Error::BadData)};
+        
+        // FIXME: We can't track files moved out of then-deleted directories
+
+        let stat = match stat_fid(mount_fd, fid) {
+            Ok(x) => x,
+            // The file was already deleted, we don't care about it
+            Err(Error::ReadFS(errno::Errno(libc::ESTALE))) => return Ok(events),
+            Err(e) => return Err(e)
+        };
 
         events.push(Event::Move {
-            old_parent_inode: stat_fid(old_dfid)?.st_ino,
+            old_parent_inode: stat_fid(mount_fd, old_dfid)?.st_ino,
             old_name: get_name(old_dfid)?,
-            new_parent_inode: stat_fid(new_dfid)?.st_ino,
+            new_parent_inode: stat_fid(mount_fd, new_dfid)?.st_ino,
             new_name: get_name(new_dfid)?,
-            inode: stat_fid(fid)?.st_ino
+            inode: stat.st_ino
         });
     }
 
@@ -169,6 +210,9 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
 
 pub fn watch<F>(path: &path::Path, callback: &mut F) -> Result<(), Error>
 where F: FnMut(Result<Vec<Event>, Error>) -> ops::ControlFlow<()> {
+
+    let mount_fd = get_mount_fd(path)?;
+
     let fd = unsafe {libc::fanotify_init(
         libc::FAN_CLASS_NOTIF
         | libc::FAN_UNLIMITED_QUEUE
@@ -194,6 +238,8 @@ where F: FnMut(Result<Vec<Event>, Error>) -> ops::ControlFlow<()> {
     )};
     if result < 0 {return Err(Error::Mark(errno::errno()))}
 
+    log::info!("Watching {}", path.display());
+
     let mut file = unsafe {fs::File::from_raw_fd(fd)};
 
     let mut buffer = [0; 4096];
@@ -202,7 +248,7 @@ where F: FnMut(Result<Vec<Event>, Error>) -> ops::ControlFlow<()> {
         let read_len = file.read(&mut buffer).expect("Failed to read");
         let mut ptr = 0;
         while ptr < read_len {
-            let (events, n_ptr) = read(&buffer, ptr);
+            let (events, n_ptr) = read(mount_fd, &buffer, ptr);
             ptr = n_ptr;
 
             match callback(events) {
