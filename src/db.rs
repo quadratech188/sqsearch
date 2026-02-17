@@ -43,6 +43,7 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
             PRIMARY KEY (inode, suffix, id)
         ) WITHOUT ROWID;
 
+        CREATE INDEX IF NOT EXISTS id_idx ON suffix_array (id);
         CREATE INDEX IF NOT EXISTS forwards_idx ON suffix_array (parent_inode, suffix);
         CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
 
@@ -52,14 +53,45 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     Ok(())
 }
 
+fn create_suffixes(tx: &rusqlite::Transaction, parent_inode: u64, inode: u64, id: i64,
+    name: &str)
+-> Result<(), Error> {
+    let mut stmt = tx.prepare_cached(indoc! {"
+        INSERT into suffix_array VALUES(?1, ?2, ?3, ?4)
+    "})?;
+    for (i, _) in name.char_indices() {
+        stmt.execute((parent_inode as i64, inode as i64, id, &name[i..]))?;
+    }
+    Ok(())
+}
+
+fn delete_suffixes(tx: &rusqlite::Transaction, id: i64) -> Result<(), Error> {
+    let mut stmt = tx.prepare_cached(indoc! {"
+        DELETE FROM suffix_array WHERE
+            id = ?1
+    "})?;
+    stmt.execute((id,))?;
+    Ok(())
+}
+
+fn reparent_suffixes(tx: &rusqlite::Transaction, parent_inode: u64, id: i64)
+-> Result<(), Error> {
+    let mut stmt = tx.prepare_cached(indoc! {"
+        UPDATE suffix_array SET parent_inode = ?1 WHERE
+            id = ?2
+    "})?;
+    stmt.execute((parent_inode as i64, id))?;
+    Ok(())
+}
+
 pub fn create(tx: &rusqlite::Transaction, parent_inode: u64, inode: u64, name: &str)
 -> Result<(), Error> {
-    let mut file_insert = tx.prepare_cached(indoc! {"
+    let mut create_file = tx.prepare_cached(indoc! {"
         INSERT INTO files(parent_inode, inode, name) VALUES(?1, ?2, ?3)
         ON CONFLICT DO NOTHING
     "})?;
     // Let big inode values wrap around to negatives
-    let id = file_insert.insert((parent_inode as i64, inode as i64, name))
+    let id = create_file.insert((parent_inode as i64, inode as i64, name))
         .map_err(|e| {
             match e {
                 rusqlite::Error::StatementChangedRows(0)
@@ -68,26 +100,20 @@ pub fn create(tx: &rusqlite::Transaction, parent_inode: u64, inode: u64, name: &
             }
         })?;
 
-    let mut suffix_insert = tx.prepare_cached(indoc! {"
-        INSERT into suffix_array VALUES(?1, ?2, ?3, ?4)
-    "})?;
-    for (i, _) in name.char_indices() {
-        suffix_insert.execute((parent_inode as i64, inode as i64, id, &name[i..]))?;
-    }
-    Ok(())
+    create_suffixes(tx, parent_inode, inode, id, name)
 }
 
 pub fn delete(tx: &rusqlite::Transaction, parent_inode: u64, name: &str)
 -> Result<(), Error> {
-    let mut delete_files = tx.prepare_cached(indoc! {"
+    let mut delete_file = tx.prepare_cached(indoc! {"
         DELETE FROM files WHERE
             parent_inode = ?1
             AND name = ?2
-        RETURNING rowid
+        RETURNING id
     "})?;
 
-    let id: i64 = delete_files.query_one(
-        (parent_inode as i64, name), |x| x.get(0))
+    let id: i64 = delete_file.query_one(
+            (parent_inode as i64, name), |x| x.get(0))
         .map_err(|e| {
             match e {
                 rusqlite::Error::QueryReturnedNoRows
@@ -96,14 +122,37 @@ pub fn delete(tx: &rusqlite::Transaction, parent_inode: u64, name: &str)
             }
         })?;
 
-    let mut delete_suffixes = tx.prepare_cached(indoc! {"
-        DELETE FROM suffix_array WHERE
-            id = ?1
+    delete_suffixes(tx, id)
+}
+
+pub fn r#move(tx: &rusqlite::Transaction, old_parent_inode: u64, old_name: &str,
+    new_parent_inode: u64, new_name: &str, inode: u64)
+-> Result<(), Error> {
+    let mut update_file = tx.prepare_cached(indoc! {"
+        UPDATE files SET parent_inode = ?1, name = ?2 WHERE
+            parent_inode = ?3
+            AND inode = ?4
+            AND name = ?5
+        RETURNING id
     "})?;
 
-    delete_suffixes.execute((id,))?;
+    let id: i64 = update_file.query_one((new_parent_inode as i64, new_name,
+            old_parent_inode as i64, inode as i64, old_name), |x| x.get(0))
+        .map_err(|e| {
+            match e {
+                rusqlite::Error::QueryReturnedNoRows
+                    => Error::NoFile(old_parent_inode, old_name.into()),
+                x => x.into()
+            }
+        })?;
 
-    Ok(())
+    if old_name == new_name {
+        reparent_suffixes(tx, new_parent_inode, id)
+    }
+    else {
+        delete_suffixes(tx, id)?;
+        create_suffixes(tx, new_parent_inode, inode, id, new_name)
+    }
 }
 
 fn estimate_specifity(query: &str) -> i64 {
