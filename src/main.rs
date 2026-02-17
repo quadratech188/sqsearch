@@ -7,6 +7,7 @@ mod fanotify;
 mod watcher;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
 
     let path = path::Path::new("/home/quadratech/.local/share/sqsearch/db.sqlite3");
     let mut db = rusqlite::Connection::open(path)?;

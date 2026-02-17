@@ -39,16 +39,25 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &Vec<fanotify::Event>)
 -> Result<(), Error> {
     let tx = db::map_db_err(conn.transaction())?;
 
-    dbg!(events);
     for event in events {
         match event {
             fanotify::Event::Create { parent_inode, inode, name } => {
-                let e = db::create(&tx, *parent_inode, *inode, name);
-                dbg!(e);
+                match db::create(&tx, *parent_inode, *inode, name) {
+                    Err(db::Error::DuplicateFile(_, _, _)) => {
+                        log::warn!("Attempted to create file that already existed in DB: {}", name);
+                        Ok(())
+                    },
+                    x => x
+                }?
             }
             fanotify::Event::Delete { parent_inode, name } => {
-                let e = db::delete(&tx, *parent_inode, name);
-                dbg!(e);
+                match db::delete(&tx, *parent_inode, name) {
+                    Err(db::Error::NoFile(_, _)) => {
+                        log::warn!("Attempted to delete file that doesn't exist in DB: {}", name);
+                        Ok(())
+                    },
+                    x => x
+                }?
             }
             fanotify::Event::Move { old_parent_inode, old_name,
                 new_parent_inode, new_name, inode }
@@ -111,7 +120,9 @@ pub fn watch(path: &path::Path, conn: &mut rusqlite::Connection) -> Result<(), E
             debounce_queue.extend_from_slice(&msg);
         }
 
+        log::debug!("Writing {} event(s) to DB", debounce_queue.len());
         handle_events(conn, &debounce_queue)?;
+        log::debug!("Wrote {} event(s) to DB", debounce_queue.len());
         debounce_queue.clear();
     }
 }
