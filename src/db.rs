@@ -1,9 +1,6 @@
-
 use std::iter;
 
 use indoc::indoc;
-
-use crate::fanotify;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -36,24 +33,31 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     conn.execute_batch(indoc! {"
         BEGIN;
 
+        CREATE TABLE IF NOT EXISTS file_handles (
+            sfh INTEGER PRIMARY KEY,
+            fh BLOB,
+            ref_count INTEGER DEFAULT 1,
+            UNIQUE(fh)
+        );
+
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY,
-            p_fh BLOB,
-            fh BLOB,
+            p_sfh INTEGER,
+            sfh INTEGER,
             name TEXT,
-            UNIQUE(p_fh, name)
+            UNIQUE(p_sfh, name)
         );
 
         CREATE TABLE IF NOT EXISTS suffix_array (
-            p_fh BLOB,
-            fh BLOB,
+            p_sfh INTEGER,
+            sfh INTEGER,
             id INTEGER,
             suffix TEXT,
-            PRIMARY KEY (fh, suffix, id)
+            PRIMARY KEY (sfh, suffix, id)
         ) WITHOUT ROWID;
 
         CREATE INDEX IF NOT EXISTS id_idx ON suffix_array (id);
-        CREATE INDEX IF NOT EXISTS forwards_idx ON suffix_array (p_fh, suffix);
+        CREATE INDEX IF NOT EXISTS forwards_idx ON suffix_array (p_sfh, suffix);
         CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
 
         COMMIT;
@@ -62,14 +66,25 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     Ok(())
 }
 
-fn create_suffixes(tx: &rusqlite::Transaction, p_fh: &[u8],
-    fh: &[u8], id: i64, name: &str)
+fn borrow_sfh(tx: &rusqlite::Transaction, fh: &[u8]) -> Result<i64, Error> {
+    let mut stmt = tx.prepare_cached(indoc! {"
+        INSERT INTO file_handles(fh) VALUES(?1)
+        ON CONFLICT DO UPDATE SET ref_count = ref_count + 1
+        RETURNING sfh
+    "})?;
+    Ok(stmt.query_one((fh,), |x| x.get(0))?)
+}
+
+// FIXME: Implement return_sfh
+
+fn create_suffixes(tx: &rusqlite::Transaction, p_sfh: i64,
+    sfh: i64, id: i64, name: &str)
 -> Result<(), Error> {
     let mut stmt = tx.prepare_cached(indoc! {"
         INSERT into suffix_array VALUES(?1, ?2, ?3, ?4)
     "})?;
     for (i, _) in name.char_indices() {
-        stmt.execute((p_fh, fh, id, &name[i..]))?;
+        stmt.execute((p_sfh, sfh, id, &name[i..]))?;
     }
     Ok(())
 }
@@ -83,24 +98,26 @@ fn delete_suffixes(tx: &rusqlite::Transaction, id: i64) -> Result<(), Error> {
     Ok(())
 }
 
-fn reparent_suffixes(tx: &rusqlite::Transaction, p_fh: &[u8], id: i64)
+fn reparent_suffixes(tx: &rusqlite::Transaction, p_sfh: i64, id: i64)
 -> Result<(), Error> {
     let mut stmt = tx.prepare_cached(indoc! {"
-        UPDATE suffix_array SET p_fh = ?1 WHERE
+        UPDATE suffix_array SET p_sfh = ?1 WHERE
             id = ?2
     "})?;
-    stmt.execute((p_fh, id))?;
+    stmt.execute((p_sfh, id))?;
     Ok(())
 }
 
 pub fn create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
 -> Result<(), Error> {
+    let p_sfh = borrow_sfh(tx, p_fh)?;
+    let sfh = borrow_sfh(tx, fh)?;
+
     let mut create_file = tx.prepare_cached(indoc! {"
-        INSERT INTO files(p_fh, fh, name) VALUES(?1, ?2, ?3)
+        INSERT INTO files(p_sfh, sfh, name) VALUES(?1, ?2, ?3)
         ON CONFLICT DO NOTHING
     "})?;
-    // Let big inode values wrap around to negatives
-    let id = create_file.insert((p_fh, fh, name))
+    let id = create_file.insert((p_sfh, sfh, name))
         .map_err(|e| {
             match e {
                 rusqlite::Error::StatementChangedRows(0)
@@ -112,20 +129,23 @@ pub fn create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
             }
         })?;
 
-    create_suffixes(tx, p_fh, fh, id, name)
+    create_suffixes(tx, p_sfh, sfh, id, name)
 }
 
 pub fn delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
 -> Result<(), Error> {
+    let p_sfh = borrow_sfh(tx, p_fh)?;
+    let sfh = borrow_sfh(tx, fh)?;
+
     let mut delete_file = tx.prepare_cached(indoc! {"
         DELETE FROM files WHERE
-            p_fh = ?1
-            AND fh = ?2
+            p_sfh = ?1
+            AND sfh = ?2
             AND name = ?3
         RETURNING id
     "})?;
 
-    let id: i64 = delete_file.query_one((p_fh, fh, name), |x| x.get(0))
+    let id: i64 = delete_file.query_one((p_sfh, sfh, name), |x| x.get(0))
         .map_err(|e| {
             match e {
                 rusqlite::Error::QueryReturnedNoRows
@@ -141,56 +161,72 @@ pub fn delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
     delete_suffixes(tx, id)
 }
 
-fn delete2(tx: &rusqlite::Transaction, p_fh: &[u8], name: &str) -> Result<(), Error> {
+fn delete2(tx: &rusqlite::Transaction, p_sfh: i64, name: &str) -> Result<(), Error> {
     let mut delete_file = tx.prepare_cached(indoc! {"
         DELETE FROM files WHERE
-            p_fh = ?1
+            p_sfh = ?1
             AND name = ?2
         RETURNING id
     "})?;
 
-    let id: i64 = delete_file.query_one((p_fh, name), |x| x.get(0))?;
+    let id: i64 = delete_file.query_one((p_sfh, name), |x| x.get(0))?;
     delete_suffixes(tx, id)
 }
 
-pub fn r#move(
-    tx: &rusqlite::Transaction,
-    old_p_fh: &[u8], new_p_fh: &[u8], fh: &[u8], old_name: &str, new_name: &str
+fn move_impl(
+    tx:&rusqlite::Transaction,
+    old_p_sfh: i64, new_p_sfh: i64, sfh: i64, old_name: &str, new_name: &str
 ) -> Result<(), Error> {
     let mut update_file = tx.prepare_cached(indoc! {"
-        UPDATE files SET p_fh = ?1, name = ?2 WHERE
-            p_fh = ?3
-            AND fh = ?4
+        UPDATE files SET p_sfh = ?1, name = ?2 WHERE
+            p_sfh = ?3
+            AND sfh = ?4
             AND name = ?5
         RETURNING id
     "})?;
 
     let id: i64 = match update_file.query_one(
-        (new_p_fh, new_name, old_p_fh, fh, old_name), |x| x.get(0)
+        (new_p_sfh, new_name, old_p_sfh, sfh, old_name), |x| x.get(0)
     ) {
         Ok(x) => x,
         Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation)
         => {
             // Something like touch a b; mv a b
             // TODO: reuse suffixes of b
-            delete2(tx, new_p_fh, new_name)?;
-            return r#move(tx, old_p_fh, new_p_fh, fh, old_name, new_name);
+            delete2(tx, new_p_sfh, new_name)?;
+            return move_impl(tx, old_p_sfh, new_p_sfh, sfh, old_name, new_name);
         }
-        Err(rusqlite::Error::QueryReturnedNoRows)
+        Err(x) => return Err(x.into())
+    };
+
+    if old_name == new_name {
+        reparent_suffixes(tx, new_p_sfh, id)
+    }
+    else {
+        delete_suffixes(tx, id)?;
+        create_suffixes(tx, new_p_sfh, sfh, id, new_name)
+    }
+}
+
+pub fn r#move(
+    tx: &rusqlite::Transaction,
+    old_p_fh: &[u8], new_p_fh: &[u8], fh: &[u8], old_name: &str, new_name: &str
+) -> Result<(), Error> {
+    match move_impl(
+        tx,
+        borrow_sfh(tx, old_p_fh)?,
+        borrow_sfh(tx, new_p_fh)?,
+        borrow_sfh(tx, fh)?,
+        old_name, new_name
+    ) {
+        Ok(x) => Ok(x),
+        Err(Error::SQLite(rusqlite::Error::QueryReturnedNoRows))
         => return Err(Error::NoFile {
             p_fh: old_p_fh.into(),
             fh: fh.into(),
             name: old_name.into()
         }),
-        Err(x) => return Err(x.into())
-    };
-
-    if old_name == new_name {
-        reparent_suffixes(tx, new_p_fh, id)
-    }
-    else {
-        delete_suffixes(tx, id)?;
-        create_suffixes(tx, new_p_fh, fh, id, new_name)
+        Err(x) => return Err(x)
     }
 }
 
@@ -245,7 +281,7 @@ pub fn prepare_query<'a>(tx: &'a rusqlite::Transaction<'a>, segments: &[&str])
         .map(|x| format!("suffix_array AS s{}", join_order[x]));
 
     let parent_conds = (0..segments.len() - 1)
-        .map(|x| format!("s{x}.fh = s{y}.p_fh", y = x+1));
+        .map(|x| format!("s{x}.sfh = s{y}.p_sfh", y = x+1));
 
     let str_conds = (0..segments.len())
         .map(|x| {
