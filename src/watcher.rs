@@ -45,35 +45,40 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &Vec<fanotify::Event>)
 
     for event in events {
         match event {
-            fanotify::Event::Create { parent_inode, inode, name } => {
-                match db::create(&tx, *parent_inode, *inode, name) {
-                    Err(db::Error::DuplicateFile(_, _, _)) => {
-                        log::warn!("Attempted to create file that already \
-                            existed in DB: `{}`", name);
+            fanotify::Event::Create { p_fh, fh, name } => {
+                match db::create(&tx, p_fh, fh, name) {
+                    Err(db::Error::DuplicateFile { p_fh: _, name }) => {
+                        log::warn!(
+                            "Attempted to create file that already existed in DB: `{}`",
+                            name
+                        );
                         Ok(())
                     },
                     x => x
                 }?
             }
-            fanotify::Event::Delete { parent_inode, name } => {
-                match db::delete(&tx, *parent_inode, name) {
-                    Err(db::Error::NoFile(_, _)) => {
-                        log::warn!("Attempted to delete file that doesn't \
-                            exist in DB: `{}`", name);
+            fanotify::Event::Delete { p_fh, fh, name } => {
+                match db::delete(&tx, p_fh, fh, name) {
+                    Err(db::Error::NoFile { p_fh: _, fh: _, name }) => {
+                        log::warn!(
+                            "Attempted to delete file that doesn't exist in DB: `{}`",
+                            name
+                        );
                         Ok(())
                     },
                     x => x
                 }?
             }
-            fanotify::Event::Move { old_parent_inode, old_name,
-                new_parent_inode, new_name, inode } => {
-                match db::r#move(&tx, *old_parent_inode, old_name, *new_parent_inode,
-                    new_name, *inode) {
-                    Err(db::Error::NoFile(_, _)) => {
-                        log::warn!("Attempted to move file that doesn't \
-                            exist in DB: `{}`, Creating new file.", old_name);
-                        db::create(&tx, *new_parent_inode, *inode, new_name)
-                    }
+            fanotify::Event::Move { old_p_fh, new_p_fh, fh, old_name, new_name } => {
+                match db::r#move(&tx, old_p_fh, new_p_fh, fh, old_name, new_name) {
+                    Err(db::Error::NoFile { p_fh: _, fh: _, name }) => {
+                        log::warn!(
+                            "Attempted to move file that doesn't exist in DB: `{}`, \
+                            Creating new file",
+                            name
+                        );
+                        db::create(&tx, new_p_fh, fh, new_name)
+                    },
                     x => x
                 }?
             }

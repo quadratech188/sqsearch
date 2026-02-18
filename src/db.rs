@@ -3,16 +3,25 @@ use std::iter;
 
 use indoc::indoc;
 
+use crate::fanotify;
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("SQLite error: {0}")]
+    #[error("DB error: {0}")]
     SQLite(#[from] rusqlite::Error),
     #[error("Bad query:")]
     BadQuery(Vec<String>),
-    #[error("File doesn't exist: {1}")]
-    NoFile(u64, String),
-    #[error("File already exists: {2}")]
-    DuplicateFile(u64, u64, String)
+    #[error("File doesn't exist: {name}")]
+    NoFile {
+        p_fh: Vec<u8>,
+        fh: Vec<u8>,
+        name: String
+    },
+    #[error("File already exists: {name}")]
+    DuplicateFile{
+        p_fh: Vec<u8>,
+        name: String
+    }
 }
 
 pub fn map_db_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error> {
@@ -29,22 +38,22 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY,
-            parent_inode INTEGER,
-            inode INTEGER,
+            p_fh BLOB,
+            fh BLOB,
             name TEXT,
-            UNIQUE(parent_inode, name)
+            UNIQUE(p_fh, name)
         );
 
         CREATE TABLE IF NOT EXISTS suffix_array (
-            parent_inode INTEGER,
-            inode INTEGER,
+            p_fh BLOB,
+            fh BLOB,
             id INTEGER,
             suffix TEXT,
-            PRIMARY KEY (inode, suffix, id)
+            PRIMARY KEY (fh, suffix, id)
         ) WITHOUT ROWID;
 
         CREATE INDEX IF NOT EXISTS id_idx ON suffix_array (id);
-        CREATE INDEX IF NOT EXISTS forwards_idx ON suffix_array (parent_inode, suffix);
+        CREATE INDEX IF NOT EXISTS forwards_idx ON suffix_array (p_fh, suffix);
         CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
 
         COMMIT;
@@ -53,14 +62,14 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     Ok(())
 }
 
-fn create_suffixes(tx: &rusqlite::Transaction, parent_inode: u64, inode: u64, id: i64,
-    name: &str)
+fn create_suffixes(tx: &rusqlite::Transaction, p_fh: &[u8],
+    fh: &[u8], id: i64, name: &str)
 -> Result<(), Error> {
     let mut stmt = tx.prepare_cached(indoc! {"
         INSERT into suffix_array VALUES(?1, ?2, ?3, ?4)
     "})?;
     for (i, _) in name.char_indices() {
-        stmt.execute((parent_inode as i64, inode as i64, id, &name[i..]))?;
+        stmt.execute((p_fh, fh, id, &name[i..]))?;
     }
     Ok(())
 }
@@ -74,50 +83,57 @@ fn delete_suffixes(tx: &rusqlite::Transaction, id: i64) -> Result<(), Error> {
     Ok(())
 }
 
-fn reparent_suffixes(tx: &rusqlite::Transaction, parent_inode: u64, id: i64)
+fn reparent_suffixes(tx: &rusqlite::Transaction, p_fh: &[u8], id: i64)
 -> Result<(), Error> {
     let mut stmt = tx.prepare_cached(indoc! {"
-        UPDATE suffix_array SET parent_inode = ?1 WHERE
+        UPDATE suffix_array SET p_fh = ?1 WHERE
             id = ?2
     "})?;
-    stmt.execute((parent_inode as i64, id))?;
+    stmt.execute((p_fh, id))?;
     Ok(())
 }
 
-pub fn create(tx: &rusqlite::Transaction, parent_inode: u64, inode: u64, name: &str)
+pub fn create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
 -> Result<(), Error> {
     let mut create_file = tx.prepare_cached(indoc! {"
-        INSERT INTO files(parent_inode, inode, name) VALUES(?1, ?2, ?3)
+        INSERT INTO files(p_fh, fh, name) VALUES(?1, ?2, ?3)
         ON CONFLICT DO NOTHING
     "})?;
     // Let big inode values wrap around to negatives
-    let id = create_file.insert((parent_inode as i64, inode as i64, name))
+    let id = create_file.insert((p_fh, fh, name))
         .map_err(|e| {
             match e {
                 rusqlite::Error::StatementChangedRows(0)
-                    => Error::DuplicateFile(parent_inode, inode, name.into()),
+                => Error::DuplicateFile {
+                    p_fh: p_fh.into(),
+                    name: name.into()
+                },
                 x => x.into()
             }
         })?;
 
-    create_suffixes(tx, parent_inode, inode, id, name)
+    create_suffixes(tx, p_fh, fh, id, name)
 }
 
-pub fn delete(tx: &rusqlite::Transaction, parent_inode: u64, name: &str)
+pub fn delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
 -> Result<(), Error> {
     let mut delete_file = tx.prepare_cached(indoc! {"
         DELETE FROM files WHERE
-            parent_inode = ?1
-            AND name = ?2
+            p_fh = ?1
+            AND fh = ?2
+            AND name = ?3
         RETURNING id
     "})?;
 
-    let id: i64 = delete_file.query_one(
-            (parent_inode as i64, name), |x| x.get(0))
+    let id: i64 = delete_file.query_one((p_fh, fh, name), |x| x.get(0))
         .map_err(|e| {
             match e {
                 rusqlite::Error::QueryReturnedNoRows
-                    => Error::NoFile(parent_inode, name.into()),
+                => Error::NoFile {
+                    p_fh: p_fh.into(),
+                    fh: fh.into(),
+                    name: name.into()
+                },
                 x => x.into()
             }
         })?;
@@ -125,37 +141,56 @@ pub fn delete(tx: &rusqlite::Transaction, parent_inode: u64, name: &str)
     delete_suffixes(tx, id)
 }
 
-pub fn r#move(tx: &rusqlite::Transaction, old_parent_inode: u64, old_name: &str,
-    new_parent_inode: u64, new_name: &str, inode: u64)
--> Result<(), Error> {
+fn delete2(tx: &rusqlite::Transaction, p_fh: &[u8], name: &str) -> Result<(), Error> {
+    let mut delete_file = tx.prepare_cached(indoc! {"
+        DELETE FROM files WHERE
+            p_fh = ?1
+            AND name = ?2
+        RETURNING id
+    "})?;
+
+    let id: i64 = delete_file.query_one((p_fh, name), |x| x.get(0))?;
+    delete_suffixes(tx, id)
+}
+
+pub fn r#move(
+    tx: &rusqlite::Transaction,
+    old_p_fh: &[u8], new_p_fh: &[u8], fh: &[u8], old_name: &str, new_name: &str
+) -> Result<(), Error> {
     let mut update_file = tx.prepare_cached(indoc! {"
-        UPDATE files SET parent_inode = ?1, name = ?2 WHERE
-            parent_inode = ?3
-            AND inode = ?4
+        UPDATE files SET p_fh = ?1, name = ?2 WHERE
+            p_fh = ?3
+            AND fh = ?4
             AND name = ?5
         RETURNING id
     "})?;
 
-    let id: i64 = match update_file.query_one((new_parent_inode as i64, new_name,
-            old_parent_inode as i64, inode as i64, old_name), |x| x.get(0)) {
+    let id: i64 = match update_file.query_one(
+        (new_p_fh, new_name, old_p_fh, fh, old_name), |x| x.get(0)
+    ) {
         Ok(x) => x,
-        Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) => {
+        Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation)
+        => {
             // Something like touch a b; mv a b
             // TODO: reuse suffixes of b
-            delete(tx, new_parent_inode, new_name)?;
-            return r#move(tx, old_parent_inode, old_name, new_parent_inode, new_name, inode);
+            delete2(tx, new_p_fh, new_name)?;
+            return r#move(tx, old_p_fh, new_p_fh, fh, old_name, new_name);
         }
         Err(rusqlite::Error::QueryReturnedNoRows)
-            => return Err(Error::NoFile(old_parent_inode, old_name.into())),
+        => return Err(Error::NoFile {
+            p_fh: old_p_fh.into(),
+            fh: fh.into(),
+            name: old_name.into()
+        }),
         Err(x) => return Err(x.into())
     };
 
     if old_name == new_name {
-        reparent_suffixes(tx, new_parent_inode, id)
+        reparent_suffixes(tx, new_p_fh, id)
     }
     else {
         delete_suffixes(tx, id)?;
-        create_suffixes(tx, new_parent_inode, inode, id, new_name)
+        create_suffixes(tx, new_p_fh, fh, id, new_name)
     }
 }
 
@@ -210,7 +245,7 @@ pub fn prepare_query<'a>(tx: &'a rusqlite::Transaction<'a>, segments: &[&str])
         .map(|x| format!("suffix_array AS s{}", join_order[x]));
 
     let parent_conds = (0..segments.len() - 1)
-        .map(|x| format!("s{x}.inode = s{y}.parent_inode", y = x+1));
+        .map(|x| format!("s{x}.fh = s{y}.p_fh", y = x+1));
 
     let str_conds = (0..segments.len())
         .map(|x| {
