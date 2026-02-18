@@ -6,6 +6,7 @@ mod db;
 mod fanotify;
 mod indexer;
 mod watcher;
+mod queryer;
 
 #[derive(clap::Parser, Debug)]
 struct Args {
@@ -45,7 +46,7 @@ fn main() -> Result<(), String> {
             indexer::index(&mut db, &dir).map_err(|e| e.to_string())?;
         }
         Commands::Query => {
-            todo!()
+            queryer::query(db).map_err(|e| e.to_string())?;
         }
     }
 

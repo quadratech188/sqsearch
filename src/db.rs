@@ -1,4 +1,4 @@
-use std::iter;
+use std::{iter, path};
 
 use indoc::indoc;
 
@@ -56,6 +56,7 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
             PRIMARY KEY (sfh, suffix, id)
         ) WITHOUT ROWID;
 
+        CREATE INDEX IF NOT EXISTS sfh_idx ON files (sfh);
         CREATE INDEX IF NOT EXISTS id_idx ON suffix_array (id);
         CREATE INDEX IF NOT EXISTS forwards_idx ON suffix_array (p_sfh, suffix);
         CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
@@ -234,8 +235,7 @@ fn estimate_specifity(query: &str) -> i64 {
     query.len() as i64
 }
 
-pub fn prepare_query<'a>(tx: &'a rusqlite::Transaction<'a>, segments: &[&str])
--> Result<(rusqlite::CachedStatement<'a>, Vec<String>), Error> {
+pub fn prepare_query<'a>(segments: &[&str]) -> Result<(String, Vec<String>), Error> {
 
     let score = |x| estimate_specifity(segments[x]);
 
@@ -267,46 +267,37 @@ pub fn prepare_query<'a>(tx: &'a rusqlite::Transaction<'a>, segments: &[&str])
 
     let mut params: Vec<String> = vec![];
 
-    /*
-    let header = format!(
-        "SELECT s{}.id FROM fts JOIN files AS s{} ON s{}.id = fts.id",
-        segments.len() - 1, join_order[0], join_order[0]);
-    */
+    let len = segments.len();
 
-    let header = format!(
-        "SELECT s{}.id FROM suffix_array AS s{}",
-        segments.len() - 1, join_order[0]);
+    let mut query = String::from("SELECT ");
 
-    let joins = (1..segments.len())
-        .map(|x| format!("suffix_array AS s{}", join_order[x]));
+    query += &(0..len)
+        .map(|x| format!("s{}.id AS s{}", x, x))
+        .collect::<Vec<_>>()
+        .join(", ");
 
-    let parent_conds = (0..segments.len() - 1)
-        .map(|x| format!("s{x}.sfh = s{y}.p_sfh", y = x+1));
+    query += " FROM ";
 
-    let str_conds = (0..segments.len())
+    query += &(0..len)
+        .map(|x| format!("suffix_array AS s{}", join_order[x]))
+        .collect::<Vec<_>>()
+        .join(" CROSS JOIN ");
+
+    query += " WHERE ";
+
+    query += &(0..len - 1)
+        .map(|x| format!("s{}.sfh = s{}.p_sfh AND ", x, x + 1))
+        .collect::<Vec<_>>()
+        .concat();
+
+    query += &(0..len)
         .map(|x| {
-            /*
-            if x == join_order[0] {
-                params.push(format!("%{}%", segments[x]));
-                return format!("fts.name LIKE ?")
-            }
-            */
-            params.push(segments[x].into());
-            params.push(format!("{}\u{10FFFF}", segments[x]));
+                params.push(segments[x].into());
+                params.push(format!("{}\u{10FFFF}", segments[x]));
+                format!("s{x}.suffix >= ? AND s{x}.suffix < ?")
+            })
+        .collect::<Vec<_>>()
+        .join(" AND ");
 
-            format!("s{x}.suffix >= ? AND s{x}.suffix < ?")
-        });
-
-    // Prevent query reordering with CROSS JOIN
-    let first = iter::chain([header], joins).collect::<Vec<_>>().join(" CROSS JOIN ");
-    let second = iter::chain(parent_conds, str_conds).collect::<Vec<_>>().join(" AND ");
-
-    let query = if second == "" {
-        first
-    }
-    else {
-        format!("{first} WHERE {second}")
-    };
-
-    Ok((tx.prepare_cached(&query)?, params))
+    Ok((query, params))
 }
