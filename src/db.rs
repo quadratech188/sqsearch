@@ -289,20 +289,14 @@ pub fn get_parent_path(mt: &Metadata, tx: &rusqlite::Connection, id: i64)
 
     let mut p_sfh: i64 = stmt.query_one((id,), |x| x.get(0))?;
 
-    if p_sfh == mt.root_sfh {
-        return Ok(mt.prefix.clone())
-    }
-
     let mut names = vec![];
 
     let mut stmt = tx.prepare_cached("
         SELECT f.name, f.p_sfh FROM files AS f WHERE f.sfh = ?1
     ")?;
-    loop {
+    while p_sfh != mt.root_sfh {
         // More than one instance is OK
         let (name, new_p_sfh): (String, i64) = stmt.query_row((p_sfh,), |x| Ok((x.get(0)?, x.get(1)?)))?;
-
-        if new_p_sfh == mt.root_sfh {break}
         names.push(name);
         p_sfh = new_p_sfh;
     }
