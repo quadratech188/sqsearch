@@ -1,9 +1,11 @@
-use std::{iter, path};
+use std::{ffi, iter, os::unix::ffi::{OsStrExt, OsStringExt}, path};
 
 use indoc::indoc;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("Bad metadata for key {0}: {1}")]
+    BadMetadata(String, rusqlite::Error),
     #[error("DB error: {0}")]
     SQLite(#[from] rusqlite::Error),
     #[error("Bad query:")]
@@ -32,6 +34,12 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 
     conn.execute_batch(indoc! {"
         BEGIN;
+
+        CREATE TABLE IF NOT EXISTS metadata (
+            k TEXT,
+            v BLOB,
+            UNIQUE(k)
+        );
 
         CREATE TABLE IF NOT EXISTS file_handles (
             sfh INTEGER PRIMARY KEY,
@@ -229,6 +237,78 @@ pub fn r#move(
         }),
         Err(x) => return Err(x)
     }
+}
+
+pub struct Metadata {
+    prefix: path::PathBuf,
+    root_sfh: i64
+}
+
+pub fn set_metadata(tx: &rusqlite::Transaction, root_path: &path::Path, root_fh: &[u8])
+-> Result<(), Error> {
+    let sfh = borrow_sfh(tx, root_fh)?;
+
+    // TODO: Do something if we're overwriting
+    let mut stmt = tx.prepare_cached("
+        INSERT OR REPLACE INTO metadata VALUES(?1, ?2)
+    ")?;
+
+    stmt.execute(("prefix", root_path.as_os_str().as_bytes()))?;
+    stmt.execute(("root_sfh", sfh))?;
+
+    Ok(())
+}
+
+pub fn get_metadata(tx: &rusqlite::Connection) -> Result<Metadata, Error> {
+    let mut stmt = tx.prepare_cached("
+        SELECT mt.v FROM metadata AS mt WHERE mt.k = ?1
+    ")?;
+
+    macro_rules! get {
+        ($key: expr) => {
+            stmt.query_one(($key,), |x| x.get(0))
+                .map_err(|e| Error::BadMetadata($key.into(), e))
+        };
+    }
+
+    let prefix: Vec<u8> = get!("prefix")?;
+    let root_sfh: i64 = get!("root_sfh")?;
+
+
+    Ok(Metadata {
+        prefix: ffi::OsString::from_vec(prefix).into(),
+        root_sfh
+    })
+}
+
+pub fn get_parent_path(mt: &Metadata, tx: &rusqlite::Connection, id: i64)
+-> Result<path::PathBuf, Error> {
+    let mut stmt = tx.prepare_cached("
+        SELECT f.p_sfh FROM files AS f WHERE f.id = ?1
+    ")?;
+
+    let mut p_sfh: i64 = stmt.query_one((id,), |x| x.get(0))?;
+    let mut names = vec![];
+
+    let mut stmt = tx.prepare_cached("
+        SELECT f.name, f.p_sfh FROM files AS f WHERE f.sfh = ?1
+    ")?;
+    loop {
+        // More than one instance is OK
+        let (name, new_p_sfh): (String, i64) = stmt.query_row((p_sfh,), |x| Ok((x.get(0)?, x.get(1)?)))?;
+
+        if new_p_sfh == mt.root_sfh {break}
+        names.push(name);
+        p_sfh = new_p_sfh;
+    }
+
+    let mut path = mt.prefix.clone();
+
+    for p in names.iter().rev() {
+        path.push(p);
+    }
+
+    Ok(path)
 }
 
 fn estimate_specifity(query: &str) -> i64 {

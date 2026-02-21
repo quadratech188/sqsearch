@@ -44,7 +44,7 @@ fn get_path(fh: &[u8]) -> Result<path::PathBuf, Error> {
     Ok(result)
 }
 
-fn do_query(conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
+fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
     let segments = msg.split("/").collect::<Vec<_>>();
 
     let (query, params) = db::prepare_query(&segments)?;
@@ -73,22 +73,8 @@ fn do_query(conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
         let names = ids.iter().map(|x| stmt.query_one((x,), |x| x.get(0)))
             .collect::<Result<Vec<String>, rusqlite::Error>>()?;
 
-        let mut stmt = conn.prepare_cached("
-            SELECT fh.fh FROM files AS f
-            JOIN file_handles AS fh ON f.p_sfh = fh.sfh
-            WHERE f.id = ?1
-        ")?;
-        
-        let p_fh: Vec<u8> = stmt.query_one((ids[0],), |x| x.get(0))?;
+        let mut path = db::get_parent_path(mt, conn, ids[0])?;
 
-        // FIXME: Read database instead of filesystem, don't require sudo for querying
-        let mut path = match get_path(&p_fh) {
-            Ok(x) => x,
-            Err(e) => {
-                log::warn!("Error while converting to path: {}", e.to_string());
-                continue
-            }
-        };
         for name in names {
             path.push(name);
         }
@@ -99,6 +85,7 @@ fn do_query(conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
 pub fn query(conn: rusqlite::Connection) -> Result<(), Error> {
     let (tx, rx) = mpsc::channel::<String>();
 
+    let mt = db::get_metadata(&conn)?;
     let interrupt_handle = conn.get_interrupt_handle();
 
     let _query_thread = thread::spawn(move || {
@@ -107,7 +94,7 @@ pub fn query(conn: rusqlite::Connection) -> Result<(), Error> {
             println!("BEGIN {}", msg);
             let begin = time::Instant::now();
 
-            if let Err(e) = do_query(&conn, &msg) {
+            if let Err(e) = do_query(&mt, &conn, &msg) {
                 println!("ERROR {}", e);
             }
             println!("END {}", msg);

@@ -59,7 +59,9 @@ fn get_fh(path: &path::Path) -> Result<(libc::c_int, Vec<u8>), Error> {
 pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), Error> {
     let mut tx = db::map_db_err(conn.transaction())?;
 
-    let (root_mount_id, _) = get_fh(path)?;
+    let (root_mount_id, root_fh) = get_fh(path)?;
+
+    db::set_metadata(&tx, path, &root_fh)?;
 
     for (i, entry) in walkdir::WalkDir::new(path).into_iter().enumerate() {
         let Ok(entry) = entry else {continue};
