@@ -33,7 +33,17 @@ fn main() -> Result<(), String> {
 
     let args = Args::parse();
 
-    let mut db = rusqlite::Connection::open(&args.db).map_err(|e|
+    let flags = match args.command {
+        Commands::Watch { filesystem: _ }
+            => rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        Commands::Index { dir: _ }
+            => rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            | rusqlite::OpenFlags::SQLITE_OPEN_CREATE,
+        Commands::Query
+            => rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+    };
+
+    let mut db = rusqlite::Connection::open_with_flags(&args.db, flags).map_err(|e|
         e.to_string())?;
 
     db::prepare_db(&db).map_err(|e| e.to_string())?;
