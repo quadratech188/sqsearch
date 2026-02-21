@@ -12,16 +12,12 @@ pub struct file_handle {
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Bad path: {0}")]
-    BadPath(path::PathBuf),
     #[error("Bad fanotify data")]
     BadData,
     #[error("From fanotify: {0}")]
     Internal(i32),
     #[error("While parsing: {0}")]
     Encoding(#[from] string::FromUtf8Error),
-    #[error("While probing filesystem: {0}")]
-    ReadFS(errno::Errno),
     #[error("While fanotify init: {0}")]
     Init(errno::Errno),
     #[error("While fanotify mark: {0}")]

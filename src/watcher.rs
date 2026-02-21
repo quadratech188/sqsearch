@@ -1,6 +1,5 @@
 use std::{ops, path, sync::mpsc, thread, time};
 
-use libc::time;
 
 use crate::{db, fanotify};
 
@@ -8,8 +7,6 @@ use crate::{db, fanotify};
 pub enum Error {
     #[error("Messaging error")]
     Messaging,
-    #[error("Not a filesystem mount: {0}")]
-    BadPath(path::PathBuf),
     #[error(transparent)]
     Fanotify(#[from] fanotify::Error),
     #[error(transparent)]

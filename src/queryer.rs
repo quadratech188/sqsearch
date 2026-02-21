@@ -1,6 +1,6 @@
-use std::{fs, io, path, sync::mpsc, thread, time};
+use std::{io, sync::mpsc, thread, time};
 
-use crate::{db, fanotify};
+use crate::db;
 
 
 #[derive(thiserror::Error, Debug)]
@@ -16,32 +16,6 @@ pub enum Error {
     DB(#[from] db::Error),
     #[error("Messaging")]
     Messaging
-}
-
-unsafe extern "C" {
-    fn open_by_handle_at(
-        mount_fd: libc::c_int,
-        handle: *const fanotify::file_handle,
-        flags: libc::c_int
-    ) -> libc::c_int;
-}
-
-fn get_path(fh: &[u8]) -> Result<path::PathBuf, Error> {
-    // FIXME: Use proper mount location
-    let fd = unsafe {open_by_handle_at(
-        libc::AT_FDCWD,
-        fh.as_ptr() as *const fanotify::file_handle, 
-        libc::O_PATH
-    )};
-    if fd < 0 {return Err(errno::errno().into())};
-
-    let proc_path = format!("/proc/self/fd/{}", fd);
-
-    let result = fs::read_link(proc_path)?;
-
-    unsafe {libc::close(fd)};
-
-    Ok(result)
 }
 
 fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {

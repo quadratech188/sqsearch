@@ -1,4 +1,4 @@
-use std::{ffi, iter, os::unix::ffi::{OsStrExt, OsStringExt}, path};
+use std::{ffi, os::unix::ffi::{OsStrExt, OsStringExt}, path};
 
 use indoc::indoc;
 
