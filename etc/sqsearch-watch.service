@@ -1,0 +1,10 @@
+[Unit]
+Description=sqsearch fanotify watcher
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/sqsearch watch /mnt/data
+Restart=on-failure
