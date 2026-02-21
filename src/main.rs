@@ -10,7 +10,7 @@ mod queryer;
 
 #[derive(clap::Parser, Debug)]
 struct Args {
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", default_value="/var/lib/sqsearch/db.sqlite3")]
     db: path::PathBuf,
 
     #[command(subcommand)]
