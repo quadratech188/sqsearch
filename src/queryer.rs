@@ -28,13 +28,7 @@ fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result
     let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
 
     loop {
-        let row = match rows.next() {
-            Ok(x) => x,
-            Err(e) if e.sqlite_error_code()
-                == Some(rusqlite::ErrorCode::OperationInterrupted) => {return Ok(())}
-            Err(e) => return Err(e.into())
-        };
-        let Some(row) = row else {return Ok(())};
+        let Some(row) = rows.next()? else {return Ok(())};
 
         let ids = (0..segments.len())
             .map(|x| row.get(x))
@@ -75,9 +69,21 @@ pub fn query(conn: rusqlite::Connection) -> Result<(), Error> {
             println!("BEGIN {}", msg);
             let begin = time::Instant::now();
 
-            if let Err(e) = do_query(&mt, &conn, &msg) {
-                println!("ERROR {}", e);
+            match do_query(&mt, &conn, &msg) {
+                Ok(()) => (),
+
+                // Having two cases of rusqlite errors was a big mistake
+
+                Err(Error::SQLite(e)) if e.sqlite_error_code()
+                    == Some(rusqlite::ErrorCode::OperationInterrupted)
+                    => (),
+                Err(Error::DB(db::Error::SQLite(e))) if e.sqlite_error_code()
+                    == Some(rusqlite::ErrorCode::OperationInterrupted)
+                    => (),
+
+                Err(e) => println!("ERROR {}", e)
             }
+
             println!("END {}", msg);
             log::info!("Query took {} ms", begin.elapsed().as_millis());
         }
