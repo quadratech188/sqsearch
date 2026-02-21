@@ -47,7 +47,14 @@ fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result
         let names = ids.iter().map(|x| stmt.query_one((x,), |x| x.get(0)))
             .collect::<Result<Vec<String>, rusqlite::Error>>()?;
 
-        let mut path = db::get_parent_path(mt, conn, ids[0])?;
+        let mut path = match db::get_parent_path(mt, conn, ids[0]) {
+            Ok(x) => x,
+            Err(db::Error::IncompletePath(id)) => {
+                log::warn!("Incomplete path for {id}");
+                continue
+            }
+            Err(e) => return Err(e.into())
+        };
 
         for name in names {
             path.push(name);

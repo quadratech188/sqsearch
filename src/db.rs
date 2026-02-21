@@ -17,10 +17,12 @@ pub enum Error {
         name: String
     },
     #[error("File already exists: {name}")]
-    DuplicateFile{
+    DuplicateFile {
         p_fh: Vec<u8>,
         name: String
-    }
+    },
+    #[error("One or more elements of path for file {0} doesn't exist in DB")]
+    IncompletePath(i64)
 }
 
 pub fn map_db_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error> {
@@ -296,7 +298,13 @@ pub fn get_parent_path(mt: &Metadata, tx: &rusqlite::Connection, id: i64)
     ")?;
     while p_sfh != mt.root_sfh {
         // More than one instance is OK
-        let (name, new_p_sfh): (String, i64) = stmt.query_row((p_sfh,), |x| Ok((x.get(0)?, x.get(1)?)))?;
+        let (name, new_p_sfh): (String, i64)
+        = match stmt.query_row((p_sfh,), |x| Ok((x.get(0)?, x.get(1)?))) {
+            Ok(x) => Ok(x),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+            => Err(Error::IncompletePath(id)),
+            Err(e) => Err(e.into())
+        }?;
         names.push(name);
         p_sfh = new_p_sfh;
     }
