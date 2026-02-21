@@ -288,6 +288,11 @@ pub fn get_parent_path(mt: &Metadata, tx: &rusqlite::Connection, id: i64)
     ")?;
 
     let mut p_sfh: i64 = stmt.query_one((id,), |x| x.get(0))?;
+
+    if p_sfh == mt.root_sfh {
+        return Ok(mt.prefix.clone())
+    }
+
     let mut names = vec![];
 
     let mut stmt = tx.prepare_cached("
