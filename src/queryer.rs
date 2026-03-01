@@ -34,6 +34,8 @@ fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result
             .map(|x| row.get(x))
             .collect::<Result<Vec<i64>, rusqlite::Error>>()?;
 
+        dbg!(&ids);
+
         let mut stmt = conn.prepare_cached("
             SELECT f.name FROM files AS f WHERE f.id = ?1
         ")?;

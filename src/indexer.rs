@@ -104,13 +104,12 @@ pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), E
             );
             continue;
         }
-        match  db::create(&tx, &p_fh, &fh, filename) {
-            Ok(()) => (),
-            Err(db::Error::DuplicateFile { p_fh: _, name: _ }) => continue,
+        match db::create(&tx, &p_fh, &fh, filename) {
             Err(e) => {
                 log::warn!("{}", e.to_string());
                 continue
-            }
+            },
+            _ => ()
         }
 
         if i % 1000 == 0 {

@@ -119,28 +119,30 @@ fn reparent_suffixes(tx: &rusqlite::Transaction, p_sfh: i64, id: i64)
     Ok(())
 }
 
-pub fn create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
--> Result<(), Error> {
-    let p_sfh = borrow_sfh(tx, p_fh)?;
-    let sfh = borrow_sfh(tx, fh)?;
-
+fn create_impl(tx: &rusqlite::Transaction, p_sfh: i64, sfh: i64, name: &str)
+-> Result<bool, Error> {
     let mut create_file = tx.prepare_cached(indoc! {"
         INSERT INTO files(p_sfh, sfh, name) VALUES(?1, ?2, ?3)
         ON CONFLICT DO NOTHING
     "})?;
-    let id = create_file.insert((p_sfh, sfh, name))
-        .map_err(|e| {
-            match e {
-                rusqlite::Error::StatementChangedRows(0)
-                => Error::DuplicateFile {
-                    p_fh: p_fh.into(),
-                    name: name.into()
-                },
-                x => x.into()
-            }
-        })?;
+    let id = match create_file.insert((p_sfh, sfh, name)) {
+        Ok(x) => x,
+        Err(rusqlite::Error::StatementChangedRows(0)) => {
+            // Same parent and name, but different file handle
+            delete2(tx, p_sfh, name)?;
+            create_impl(tx, p_sfh, sfh, name)?;
+            return Ok(true)
+        }
+        Err(x) => return Err(x.into())
+    };
 
-    create_suffixes(tx, p_sfh, sfh, id, name)
+    create_suffixes(tx, p_sfh, sfh, id, name)?;
+    return Ok(false)
+}
+
+pub fn create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
+-> Result<bool, Error> {
+    create_impl(tx, borrow_sfh(tx, p_fh)?, borrow_sfh(tx, fh)?, name)
 }
 
 pub fn delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)

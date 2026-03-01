@@ -43,16 +43,11 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &Vec<fanotify::Event>)
     for event in events {
         match event {
             fanotify::Event::Create { p_fh, fh, name } => {
-                match db::create(&tx, p_fh, fh, name) {
-                    Err(db::Error::DuplicateFile { p_fh: _, name }) => {
-                        log::warn!(
-                            "Attempted to create file that already existed in DB: `{}`",
-                            name
-                        );
-                        Ok(())
-                    },
-                    x => x
-                }?
+                if db::create(&tx, p_fh, fh, name)? {
+                    log::warn!(
+                        "Attempted to create duplicate file: `{name}`",
+                    )
+                }
             }
             fanotify::Event::Delete { p_fh, fh, name } => {
                 match db::delete(&tx, p_fh, fh, name) {
@@ -74,10 +69,10 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &Vec<fanotify::Event>)
                             Creating new file",
                             name
                         );
-                        db::create(&tx, new_p_fh, fh, new_name)
+                        db::create(&tx, new_p_fh, fh, new_name)?;
                     },
-                    x => x
-                }?
+                    _ => ()
+                }
             }
         }
     }
