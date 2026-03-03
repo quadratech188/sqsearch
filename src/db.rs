@@ -313,7 +313,7 @@ pub fn get_parent_path(mt: &Metadata, tx: &rusqlite::Connection, id: i64)
         p_sfh = new_p_sfh;
         cnt += 1;
 
-        if cnt > 100 {
+        if cnt > 1000 {
             return Err(Error::IncompletePath(id))
         }
     }

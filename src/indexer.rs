@@ -36,7 +36,7 @@ fn get_fh(path: &path::Path) -> Result<(libc::c_int, Vec<u8>), Error> {
         pathname.as_ptr(),
         &mut fh,
         mount_id.as_mut_ptr(),
-        libc::AT_SYMLINK_FOLLOW
+        0
     )};
     if ret < 0 && errno::errno().0 != libc::EOVERFLOW {return Err(errno::errno().into())}
     let fhsize = size_of::<fanotify::file_handle>() + fh.handle_bytes as usize;
@@ -49,7 +49,7 @@ fn get_fh(path: &path::Path) -> Result<(libc::c_int, Vec<u8>), Error> {
         pathname.as_ptr(),
         buf.as_mut_ptr() as *mut fanotify::file_handle,
         mount_id.as_mut_ptr(),
-        libc::AT_SYMLINK_FOLLOW
+        0
     )};
     if ret < 0 {return Err(errno::errno().into())};
 
@@ -59,7 +59,7 @@ fn get_fh(path: &path::Path) -> Result<(libc::c_int, Vec<u8>), Error> {
 pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), Error> {
     let mut tx = db::map_db_err(conn.transaction())?;
 
-    let (root_mount_id, root_fh) = get_fh(path)?;
+    let (_, root_fh) = get_fh(path)?;
 
     db::set_metadata(&tx, path, &root_fh)?;
 
@@ -70,7 +70,7 @@ pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), E
         let Some(filename) = path.file_name() else {continue};
         let Ok(filename) = filename.try_into() else {continue};
 
-        let (mount_id, fh) = match get_fh(path) {
+        let (_, fh) = match get_fh(path) {
             Ok(x) => x,
             Err(e) => {
                 log::warn!(
@@ -80,14 +80,7 @@ pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), E
                 continue
             }
         };
-        if mount_id != root_mount_id {
-            log::debug!(
-                "Skipping {} as it belongs to a different mount",
-                path.display()
-            );
-            continue;
-        }
-        let (p_mount_id, p_fh) = match get_fh(parent) {
+        let (_, p_fh) = match get_fh(parent) {
             Ok(x) => x,
             Err(e) => {
                 log::warn!(
@@ -97,13 +90,6 @@ pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), E
                 continue
             }
         };
-        if p_mount_id != root_mount_id {
-            log::debug!(
-                "Skipping {} as it belongs to a different mount",
-                path.display()
-            );
-            continue;
-        }
         match db::create(&tx, &p_fh, &fh, filename) {
             Err(e) => {
                 log::warn!("{}", e.to_string());
