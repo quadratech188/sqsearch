@@ -15,22 +15,21 @@ pub enum Error {
     #[error(transparent)]
     DB(#[from] db::Error),
     #[error("Messaging")]
-    Messaging
+    Messaging,
+    #[error("Bad query")]
+    BadQuery
 }
 
-fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
-    let segments = msg.split("/").collect::<Vec<_>>();
-
-    let (query, params) = db::prepare_query(&segments)?;
-    log::debug!("Query: {}", query);
-
-    let mut stmt = conn.prepare_cached(&query)?;
-    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
-
+fn print_results(
+    mt: &db::Metadata,
+    conn: &rusqlite::Connection, rows: &mut rusqlite::Rows,
+    row_length: usize, count: usize)
+-> Result<usize, Error> {
+    let mut cnt = 0;
     loop {
-        let Some(row) = rows.next()? else {return Ok(())};
+        let Some(row) = rows.next()? else {return Ok(cnt)};
 
-        let ids = (0..segments.len())
+        let ids = (0..row_length)
             .map(|x| row.get(x))
             .collect::<Result<Vec<i64>, rusqlite::Error>>()?;
 
@@ -54,7 +53,35 @@ fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result
             path.push(name);
         }
         println!("ITEM {}", path.display());
+        cnt += 1;
+        if cnt == count {
+            return Ok(cnt);
+        }
     }
+}
+
+fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
+    let (count, msg) = match msg.strip_prefix("COUNT ") {
+        None => (usize::MAX, msg),
+        Some(x) => {
+            let (count, query) = x.split_once(' ')
+                .ok_or(Error::BadQuery)?;
+            let count = count.parse()
+                .map_err(|_| Error::BadQuery)?;
+            (count, query)
+        }
+    };
+
+    let segments = msg.split("/").collect::<Vec<_>>();
+
+    let (query, params) = db::prepare_query(&segments)?;
+    log::debug!("Query: {}", query);
+
+    let mut stmt = conn.prepare_cached(&query)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
+
+    print_results(mt, conn, &mut rows, segments.len(), count)?;
+    Ok(())
 }
 
 pub fn query(conn: rusqlite::Connection) -> Result<(), Error> {
