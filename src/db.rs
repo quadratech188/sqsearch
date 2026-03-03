@@ -62,7 +62,7 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
             p_sfh INTEGER,
             sfh INTEGER,
             id INTEGER,
-            suffix TEXT,
+            suffix TEXT COLLATE NOCASE,
             PRIMARY KEY (sfh, suffix, id)
         ) WITHOUT ROWID;
 
