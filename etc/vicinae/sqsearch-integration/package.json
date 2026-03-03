@@ -18,7 +18,25 @@
       "mode": "view"
     }
   ],
-  "preferences": [],
+  "preferences": [
+	  {
+		  "name": "half-life",
+		  "title": "Score Half-Life",
+		  "description": "Determines how fast file scores decay (in days)",
+		  "required": true,
+		  "type": "textfield",
+		  "default": "30"
+	  },
+	  {
+		  "name": "default-count",
+		  "title": "Default maximum number of results",
+		  "description": "Determines how many query results are processed.",
+		  "required": true,
+		  "type": "textfield",
+		  "default": "256"
+
+	  }
+  ],
   "scripts": {
     "build": "vici build",
     "dev": "vici develop",

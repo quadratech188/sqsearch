@@ -1,10 +1,22 @@
-import { Action, ActionPanel, Clipboard, closeMainWindow, Detail, Icon, Keyboard, List, LocalStorage, open, showInFileBrowser, showToast, Toast } from "@vicinae/api";
+import { Action, ActionPanel, Clipboard, closeMainWindow, Detail, getPreferenceValues, Icon, Keyboard, List, LocalStorage, open, showInFileBrowser, showToast, Toast } from "@vicinae/api";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {ChildProcessWithoutNullStreams, spawn} from "node:child_process"
 import readline, { createInterface } from "node:readline"
 import { stat, statSync } from "node:fs";
 
-const k = - 0.1
+function load_prefs() {
+	const prefs = getPreferenceValues()
+	const half_life = Number(prefs['half-life']) * 86400
+	// e^kt = 1/2
+	// kt = - ln 2
+	// k = - (ln 2) / t
+	const k = - Math.log(2) / half_life
+	const default_count = Number(prefs['default-count'])
+
+	return [k, default_count]
+}
+
+const [k, default_count] = load_prefs()
 
 type HistoryData = {
 	score: number,
@@ -79,7 +91,7 @@ class Result {
 
 export default function SQSearch() {
 	const [search_text, set_query] = useState("")
-	const [count, set_count] = useState(512)
+	const [count, set_count] = useState(default_count)
 
 	const [known_matches, set_known_matches] = useState<string[]>([])
 	const [matches, set_matches] = useState<string[]>([])
@@ -153,7 +165,7 @@ export default function SQSearch() {
 	}, [search_text, count])
 
 	useEffect(() => {
-		set_count(512)
+		set_count(default_count)
 	}, [search_text])
 
 	const select = (x: string) => {
