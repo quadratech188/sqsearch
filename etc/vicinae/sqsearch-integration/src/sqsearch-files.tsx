@@ -206,9 +206,12 @@ function get_icon(path: string): Icon {
 }
 
 function file_panel(path: string, key: string, select: (x: string) => void, more_results: () => void) {
+	const segments = path.split('/')
+	const filename = segments[segments.length - 1]
 	return  (
 	<List.Item
 		title={path}
+		subtitle={filename}
 		key={key}
 		icon={get_icon(path)}
 		actions={
