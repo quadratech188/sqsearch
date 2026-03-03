@@ -298,6 +298,8 @@ pub fn get_parent_path(mt: &Metadata, tx: &rusqlite::Connection, id: i64)
     let mut stmt = tx.prepare_cached("
         SELECT f.name, f.p_sfh FROM files AS f WHERE f.sfh = ?1
     ")?;
+
+    let mut cnt = 0;
     while p_sfh != mt.root_sfh {
         // More than one instance is OK
         let (name, new_p_sfh): (String, i64)
@@ -309,6 +311,11 @@ pub fn get_parent_path(mt: &Metadata, tx: &rusqlite::Connection, id: i64)
         }?;
         names.push(name);
         p_sfh = new_p_sfh;
+        cnt += 1;
+
+        if cnt > 100 {
+            return Err(Error::IncompletePath(id))
+        }
     }
 
     let mut path = mt.prefix.clone();
@@ -358,7 +365,7 @@ pub fn prepare_query<'a>(segments: &[&str]) -> Result<(String, Vec<String>), Err
 
     let len = segments.len();
 
-    let mut query = String::from("SELECT ");
+    let mut query = String::from("SELECT DISTINCT ");
 
     query += &(0..len)
         .map(|x| format!("s{}.id AS s{}", x, x))
