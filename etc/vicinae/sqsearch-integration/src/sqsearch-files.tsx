@@ -1,8 +1,7 @@
-import { Action, ActionPanel, Clipboard, closeMainWindow, Detail, getPreferenceValues, Icon, Keyboard, List, LocalStorage, open, showInFileBrowser, showToast, Toast } from "@vicinae/api";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Action, ActionPanel, Clipboard, closeMainWindow, getPreferenceValues, Icon, List, LocalStorage, open, showInFileBrowser} from "@vicinae/api";
+import { useEffect, useRef, useState} from "react";
 import {ChildProcessWithoutNullStreams, spawn} from "node:child_process"
-import readline, { createInterface } from "node:readline"
-import { stat, statSync } from "node:fs";
+import readline from "node:readline"
 
 function load_prefs() {
 	const prefs = getPreferenceValues()

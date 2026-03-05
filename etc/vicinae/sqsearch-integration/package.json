@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/vicinaehq/vicinae/refs/heads/main/extra/schemas/extension.json",
   "name": "sqsearch-integration",
   "title": "SQSearch integration",
-  "description": "Why is this a required field",
+  "description": "Search files with SQSearch",
   "categories": [],
   "license": "MIT",
   "author": "quadratech188",
@@ -13,8 +13,7 @@
     {
       "name": "sqsearch-files",
       "title": "SQSearch Files",
-      "subtitle": "Subtitle",
-      "description": "Description",
+      "description": "Search files with SQSearch",
       "mode": "view"
     }
   ],
