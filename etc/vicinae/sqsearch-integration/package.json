@@ -32,7 +32,7 @@
 		  "description": "Determines how many query results are processed.",
 		  "required": true,
 		  "type": "textfield",
-		  "default": "256"
+		  "default": "128"
 
 	  }
   ],
