@@ -12,10 +12,10 @@ function load_prefs() {
 	const k = - Math.log(2) / half_life
 	const default_count = Number(prefs['default-count'])
 
-	return [k, default_count]
+	return [k, default_count, prefs['prefix']]
 }
 
-const [k, default_count] = load_prefs()
+const [k, default_count, prefix] = load_prefs()
 
 type HistoryData = {
 	score: number,
@@ -210,7 +210,7 @@ export default function SQSearch() {
 		<List.Section title={`Seen before (${ui_results.known.length})`}>
 			{ui_results.known.map((path, index) => (
 			<FilePanel key={`${index}-${path}`}
-				path={path}
+				path={`${prefix}/${path}`}
 				select={() => select(path)}
 				more_results={() => set_count(x => 2 * x)}
 				/>
@@ -220,7 +220,7 @@ export default function SQSearch() {
 		<List.Section title={`Results (${ui_results.matches.length})`}>
 			{ui_results.matches.map((path, index) => (
 			<FilePanel key={`${index}-${path}`}
-				path={path}
+				path={`${prefix}/${path}`}
 				select={() => select(path)}
 				more_results={() => set_count(x => 2 * x)}
 				/>

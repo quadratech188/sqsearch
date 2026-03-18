@@ -34,6 +34,15 @@
 		  "type": "textfield",
 		  "default": "128"
 
+	  },
+	  {
+		  "name": "prefix",
+		  "title": "Prefix",
+		  "description": "Location of indexed filesystem",
+		  "required": true,
+		  "type": "textfield",
+		  "default": "REPLACE WITH FILESYSTEM LOCATION"
+
 	  }
   ],
   "scripts": {

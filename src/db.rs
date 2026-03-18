@@ -244,11 +244,10 @@ pub fn r#move(
 }
 
 pub struct Metadata {
-    prefix: path::PathBuf,
     root_sfh: i64
 }
 
-pub fn set_metadata(tx: &rusqlite::Transaction, root_path: &path::Path, root_fh: &[u8])
+pub fn set_metadata(tx: &rusqlite::Transaction, root_fh: &[u8])
 -> Result<(), Error> {
     let sfh = borrow_sfh(tx, root_fh)?;
 
@@ -257,7 +256,6 @@ pub fn set_metadata(tx: &rusqlite::Transaction, root_path: &path::Path, root_fh:
         INSERT OR REPLACE INTO metadata VALUES(?1, ?2)
     ")?;
 
-    stmt.execute(("prefix", root_path.as_os_str().as_bytes()))?;
     stmt.execute(("root_sfh", sfh))?;
 
     Ok(())
@@ -275,12 +273,10 @@ pub fn get_metadata(tx: &rusqlite::Connection) -> Result<Metadata, Error> {
         };
     }
 
-    let prefix: Vec<u8> = get!("prefix")?;
     let root_sfh: i64 = get!("root_sfh")?;
 
 
     Ok(Metadata {
-        prefix: ffi::OsString::from_vec(prefix).into(),
         root_sfh
     })
 }
@@ -318,7 +314,7 @@ pub fn get_parent_path(mt: &Metadata, tx: &rusqlite::Connection, id: i64)
         }
     }
 
-    let mut path = mt.prefix.clone();
+    let mut path = path::PathBuf::new();
 
     for p in names.iter().rev() {
         path.push(p);

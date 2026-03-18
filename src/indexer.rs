@@ -61,7 +61,7 @@ pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), E
 
     let (_, root_fh) = get_fh(path)?;
 
-    db::set_metadata(&tx, path, &root_fh)?;
+    db::set_metadata(&tx, &root_fh)?;
 
     for (i, entry) in walkdir::WalkDir::new(path).into_iter().enumerate() {
         let Ok(entry) = entry else {continue};
