@@ -205,7 +205,6 @@ export default function SQSearch() {
 
 	return (
 	<List searchBarPlaceholder="Search files..."
-		searchText={search_text}
 		onSearchTextChange={set_query}
 		isLoading={!ready}>
 		<List.Section title={`Seen before (${ui_results.known.length})`}>
@@ -214,7 +213,6 @@ export default function SQSearch() {
 				path={`${prefix}/${path}`}
 				select={() => select(path)}
 				more_results={() => set_count(x => 2 * x)}
-				search_in={() => set_query(path + '/')}
 				/>
 			))}
 		</List.Section>
@@ -225,7 +223,6 @@ export default function SQSearch() {
 				path={`${prefix}/${path}`}
 				select={() => select(path)}
 				more_results={() => set_count(x => 2 * x)}
-				search_in={() => set_query(path + '/')}
 				/>
 			))}
 		</List.Section>
@@ -242,9 +239,8 @@ interface FilePanelProps {
 	path: string
 	select: () => void
 	more_results: () => void
-	search_in: () => void
 }
-function FilePanel({path, select, more_results, search_in: browse_in}: FilePanelProps) {
+function FilePanel({path, select, more_results}: FilePanelProps) {
 	const segments = path.split('/')
 	const filename = segments[segments.length - 1]
 	return (
@@ -275,14 +271,6 @@ function FilePanel({path, select, more_results, search_in: browse_in}: FilePanel
 						shortcut={'copy-path'}
 						onAction={() => {
 							select();
-							Clipboard.copy(path)
-						}}/>
-					<Action icon={Icon.CopyClipboard}
-						title='Search in '
-						shortcut={'edit'}
-						onAction={() => {
-							select();
-							browse_in()
 							Clipboard.copy(path)
 						}}/>
 				</ActionPanel.Section>
