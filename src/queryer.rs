@@ -121,7 +121,7 @@ pub fn query(conn: rusqlite::Connection) -> Result<(), Error> {
     loop {
         let mut buffer = String::new();
         stdin.read_line(&mut buffer)?;
-        let trimmed = buffer.trim_end().to_string();
+        let trimmed = buffer.trim_end_matches('\n').to_string();
 
         interrupt_handle.interrupt();
 
