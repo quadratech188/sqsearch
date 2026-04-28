@@ -36,45 +36,96 @@ fn handle_message(tx: &mpsc::Sender<Message>,
     Ok(())
 }
 
+fn get_parent_id(tx: &rusqlite::Transaction, p_fh: &[u8], name: &str)
+-> Result<i64, Error> {
+        let id = db::get_single_id(&tx, p_fh);
+        if let Err(db::Error::NoFile) = id {
+            log::warn!("Failed to find parent of file: {name}")
+        }
+        Ok(id?)
+}
+
+fn handle_create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
+-> Result<(), Error> {
+    let parent_id = get_parent_id(tx, p_fh, name)?;
+
+    match db::create(tx, parent_id, fh, name) {
+        Ok(x) => Ok(x),
+        Err(db::Error::DuplicateFile) => {
+            log::warn!("File `{name}` already exists at location, overwriting");
+            db::delete(tx, db::get_rough_id(tx, parent_id, name)?)?;
+            db::create(tx, parent_id, fh, name)?;
+            return Ok(())
+        }
+        Err(e) => Err(e)
+    }?;
+    Ok(())
+}
+
+fn handle_delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
+-> Result<(), Error> {
+    let parent_id = get_parent_id(tx, p_fh, name)?;
+
+    let id = match db::get_id(tx, parent_id, fh, name) {
+        Ok(x) => Ok(x),
+        Err(db::Error::NoFile) => {
+            log::warn!("Attempted to delete file `{name}` that doesn't exist");
+            return Ok(())
+        }
+        Err(e) => Err(e)
+    }?;
+
+    db::delete(tx, id)?;
+    Ok(())
+}
+
+fn handle_move(
+    tx: &rusqlite::Transaction,
+    old_p_fh: &[u8], new_p_fh: &[u8], fh: &[u8], old_name: &str, new_name: &str
+) -> Result<(), Error> {
+    let old_parent_id = get_parent_id(tx, old_p_fh, old_name)?;
+    let new_parent_id = get_parent_id(tx, new_p_fh, new_name)?;
+
+    let id = match db::get_id(tx, old_parent_id, fh, old_name) {
+        Ok(x) => Ok(x),
+        Err(db::Error::NoFile) => {
+            log::warn!("Attempted to move file `{old_name}` that doesn't exist. \
+                creating new file.");
+            db::create(tx, new_parent_id, fh, new_name)?;
+            return Ok(())
+        }
+        Err(e) => Err(e)
+    }?;
+
+    match db::r#move(tx, id, new_parent_id, new_name) {
+        Ok(x) => Ok(x),
+        Err(db::Error::DuplicateFile) => {
+            // touch a; touch b; mv a b
+            db::delete(tx, db::get_rough_id(tx, new_parent_id, new_name)?)?;
+            db::r#move(tx, id, new_parent_id, new_name)?;
+            return Ok(())
+        }
+        Err(e) => Err(e)
+    }?;
+    Ok(())
+}
+
 fn handle_events(conn: &mut rusqlite::Connection, events: &Vec<fanotify::Event>)
 -> Result<(), Error> {
     let tx = db::map_db_err(conn.transaction())?;
 
     for event in events {
         match event {
-            fanotify::Event::Create { p_fh, fh, name } => {
-                if db::create(&tx, p_fh, fh, name)? {
-                    log::warn!(
-                        "Attempted to create duplicate file: `{name}`",
-                    )
-                }
+            fanotify::Event::Create {p_fh, fh, name} => {
+                handle_create(&tx, p_fh, fh, name)
             }
             fanotify::Event::Delete { p_fh, fh, name } => {
-                match db::delete(&tx, p_fh, fh, name) {
-                    Err(db::Error::NoFile { p_fh: _, fh: _, name }) => {
-                        log::warn!(
-                            "Attempted to delete file that doesn't exist in DB: `{}`",
-                            name
-                        );
-                        Ok(())
-                    },
-                    x => x
-                }?
+                handle_delete(&tx, p_fh, fh, name)
             }
             fanotify::Event::Move { old_p_fh, new_p_fh, fh, old_name, new_name } => {
-                match db::r#move(&tx, old_p_fh, new_p_fh, fh, old_name, new_name) {
-                    Err(db::Error::NoFile { p_fh: _, fh: _, name }) => {
-                        log::warn!(
-                            "Attempted to move file that doesn't exist in DB: `{}`, \
-                            Creating new file",
-                            name
-                        );
-                        db::create(&tx, new_p_fh, fh, new_name)?;
-                    },
-                    _ => ()
-                }
+                handle_move(&tx, old_p_fh, new_p_fh, fh, old_name, new_name)
             }
-        }
+        }?
     }
 
     db::map_db_err(tx.commit())?;

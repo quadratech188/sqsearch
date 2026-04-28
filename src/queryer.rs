@@ -21,7 +21,6 @@ pub enum Error {
 }
 
 fn print_results(
-    mt: &db::Metadata,
     conn: &rusqlite::Connection, rows: &mut rusqlite::Rows,
     row_length: usize, count: usize)
 -> Result<usize, Error> {
@@ -40,7 +39,7 @@ fn print_results(
         let names = ids.iter().map(|x| stmt.query_one((x,), |x| x.get(0)))
             .collect::<Result<Vec<String>, rusqlite::Error>>()?;
 
-        let mut path = match db::get_parent_path(mt, conn, ids[0]) {
+        let mut path = match db::get_path(conn, ids[0]) {
             Ok(x) => x,
             Err(db::Error::IncompletePath(id)) => {
                 log::warn!("Incomplete path for {id}");
@@ -49,7 +48,7 @@ fn print_results(
             Err(e) => return Err(e.into())
         };
 
-        for name in names {
+        for name in &names[1..] {
             path.push(name);
         }
         println!("ITEM {}", path.display());
@@ -60,7 +59,7 @@ fn print_results(
     }
 }
 
-fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
+fn do_query(conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
     let (count, msg) = match msg.strip_prefix("COUNT ") {
         None => (usize::MAX, msg),
         Some(x) => {
@@ -80,14 +79,13 @@ fn do_query(mt: &db::Metadata, conn: &rusqlite::Connection, msg: &str) -> Result
     let mut stmt = conn.prepare_cached(&query)?;
     let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
 
-    print_results(mt, conn, &mut rows, segments.len(), count)?;
+    print_results(conn, &mut rows, segments.len(), count)?;
     Ok(())
 }
 
 pub fn query(conn: rusqlite::Connection) -> Result<(), Error> {
     let (tx, rx) = mpsc::channel::<String>();
 
-    let mt = db::get_metadata(&conn)?;
     let interrupt_handle = conn.get_interrupt_handle();
 
     let _query_thread = thread::spawn(move || {
@@ -96,7 +94,7 @@ pub fn query(conn: rusqlite::Connection) -> Result<(), Error> {
             println!("BEGIN {}", msg);
             let begin = time::Instant::now();
 
-            match do_query(&mt, &conn, &msg) {
+            match do_query(&conn, &msg) {
                 Ok(()) => (),
 
                 // Having two cases of rusqlite errors was a big mistake

@@ -9,7 +9,9 @@ pub enum Error {
     #[error("OS error: {0}")]
     OS(#[from] errno::Errno),
     #[error("Nul error: {0}")]
-    Nul(#[from] ffi::NulError)
+    Nul(#[from] ffi::NulError),
+    #[error("Provided root path doesn't match with DB")]
+    BadRoot
 }
 
 unsafe extern "C" {
@@ -59,12 +61,11 @@ fn get_fh(path: &path::Path) -> Result<(libc::c_int, Vec<u8>), Error> {
 pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), Error> {
     let mut tx = db::map_db_err(conn.transaction())?;
 
-    let (_, root_fh) = get_fh(path)?;
-
-    db::set_metadata(&tx, &root_fh)?;
+    db::ensure_root(&tx, &get_fh(path)?.1)?;
 
     for (i, entry) in walkdir::WalkDir::new(path).into_iter().enumerate() {
         let Ok(entry) = entry else {continue};
+        if entry.path() == path {continue};
         let path = entry.path();
         let Some(parent) = path.parent() else {continue};
         let Some(filename) = path.file_name() else {continue};
@@ -90,7 +91,19 @@ pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), E
                 continue
             }
         };
-        match db::create(&tx, &p_fh, &fh, filename) {
+        let parent_id = match db::get_single_id(&tx, &p_fh) {
+            Ok(x) => x,
+            Err(e) => {
+                log::warn!("Directory of file handle for {} doesn't exist: {}",
+                    parent.display(), e);
+                continue
+            }
+        };
+
+        match db::create(&tx, parent_id, &fh, filename) {
+            Err(db::Error::DuplicateFile) => {
+                // ignore
+            }
             Err(e) => {
                 log::warn!("{}", e.to_string());
                 continue
