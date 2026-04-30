@@ -68,7 +68,7 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 
 pub fn ensure_root(tx: &rusqlite::Transaction, fh: &[u8]) -> Result<(), Error> {
     match get_single_id(tx, fh) {
-        Ok(1) => {
+        Ok(ROOT_ID) => {
             Ok(())
         }
         Ok(_) => {
