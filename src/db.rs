@@ -34,12 +34,6 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     conn.execute_batch(indoc! {"
         BEGIN;
 
-        CREATE TABLE IF NOT EXISTS metadata (
-            k TEXT,
-            v BLOB,
-            UNIQUE(k)
-        );
-
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY,
             file_handle BLOB,
@@ -53,11 +47,11 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
         CREATE TABLE IF NOT EXISTS suffix_array (
             parent_id INTEGER,
             id INTEGER,
-            suffix TEXT COLLATE NOCASE
-        );
+            suffix TEXT COLLATE NOCASE,
+            PRIMARY KEY (parent_id, suffix, id)
+        ) WITHOUT ROWID;
 
         CREATE INDEX IF NOT EXISTS backwards_idx ON suffix_array (id, suffix);
-        CREATE INDEX IF NOT EXISTS forwards_idx ON suffix_array (parent_id, suffix);
         CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
 
         COMMIT;
