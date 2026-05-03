@@ -34,7 +34,7 @@ struct WatchArgs {
     path: path::PathBuf
 }
 
-fn watch(globals: GlobalArgs, args: WatchArgs) -> Result<(), Box<dyn error::Error>> {
+fn watch(globals: GlobalArgs, args: WatchArgs) -> Result<(), anyhow::Error> {
     let mut conn = rusqlite::Connection::open_with_flags(
         globals.db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -51,7 +51,7 @@ struct IndexArgs {
     path: path::PathBuf
 }
 
-fn index(globals: GlobalArgs, args: IndexArgs) -> Result<(), Box<dyn error::Error>> {
+fn index(globals: GlobalArgs, args: IndexArgs) -> Result<(), anyhow::Error> {
     let mut conn = rusqlite::Connection::open_with_flags(
         globals.db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -69,7 +69,7 @@ struct QueryArgs {
 
 }
 
-fn query(globals: GlobalArgs, _: QueryArgs) -> Result<(), Box<dyn error::Error>> {
+fn query(globals: GlobalArgs, _: QueryArgs) -> Result<(), anyhow::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         globals.db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -81,7 +81,7 @@ fn query(globals: GlobalArgs, _: QueryArgs) -> Result<(), Box<dyn error::Error>>
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn error::Error>> {
+fn main() -> Result<(), anyhow::Error> {
     env_logger::Builder::from_env(
         env_logger::Env::default()
         .default_filter_or("info")

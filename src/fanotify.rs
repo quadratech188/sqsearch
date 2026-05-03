@@ -1,5 +1,5 @@
 use core::slice;
-use std::{ffi::{self, OsString}, fs, io::Read, mem, ops, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, vec};
+use std::{ffi::{self, OsString}, fs, io::{self, Read}, mem, ops, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, vec};
 
 use libc;
 
@@ -17,9 +17,9 @@ pub enum Error {
     #[error("From fanotify: {0}")]
     Internal(i32),
     #[error("While fanotify init: {0}")]
-    Init(errno::Errno),
+    Init(io::Error),
     #[error("While fanotify mark: {0}")]
-    Mark(errno::Errno)
+    Mark(io::Error)
 }
 
 #[derive(Debug, Clone)]
@@ -166,7 +166,9 @@ where F: FnMut(Result<Vec<Event>, Error>) -> ops::ControlFlow<()> {
         | libc::FAN_REPORT_DIR_FID,
         libc::O_LARGEFILE as u32
     )};
-    if fd < 0 {return Err(Error::Init(errno::errno()))}
+    if fd < 0 {
+        return Err(Error::Init(io::Error::last_os_error()))
+    }
 
     let result = unsafe {libc::fanotify_mark(fd,
         libc::FAN_MARK_ADD
@@ -180,7 +182,9 @@ where F: FnMut(Result<Vec<Event>, Error>) -> ops::ControlFlow<()> {
             .unwrap()
             .as_ptr()
     )};
-    if result < 0 {return Err(Error::Mark(errno::errno()))}
+    if result < 0 {
+        return Err(Error::Mark(io::Error::last_os_error()))
+    }
 
     log::info!("Watching {}", path.display());
 

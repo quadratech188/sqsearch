@@ -10,8 +10,8 @@ pub enum Error {
     SQLite(#[from] rusqlite::Error),
     #[error("Bad query:")]
     BadQuery(Vec<String>),
-    #[error("One or more elements of path for file {0} doesn't exist in DB")]
-    IncompletePath(i64),
+    #[error("Failed to find path for file")]
+    IncompletePath,
 
     #[error("File doesn't exist")]
     NoFile,
@@ -222,7 +222,7 @@ pub fn get_path(tx: &rusqlite::Connection, id: i64)
             }) {
             Ok(x) => Ok(x),
             Err(rusqlite::Error::QueryReturnedNoRows)
-            => Err(Error::IncompletePath(id)),
+            => Err(Error::IncompletePath),
             Err(e) => Err(e.into())
         }?;
 
@@ -233,7 +233,7 @@ pub fn get_path(tx: &rusqlite::Connection, id: i64)
 
         cnt += 1;
         if cnt > 1000 {
-            return Err(Error::IncompletePath(id))
+            return Err(Error::IncompletePath)
         }
     }
 
