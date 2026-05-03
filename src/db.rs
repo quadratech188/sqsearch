@@ -1,4 +1,4 @@
-use std::path;
+use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path};
 
 const ROOT_ID: i64 = 1;
 
@@ -31,13 +31,18 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "normal")?;
 
+    // The files table needs to store every file/dir regardless of encoding, as we'll need to index
+    // its subdirs, so we encode filenames as BLOB
+    // But it doesn't make sense to run queries on invalid UTF-8, so we use TEXT for suffix_array,
+    // and we just don't include entries for invalid UTF-8s at all
+
     conn.execute_batch(indoc! {"
         BEGIN;
 
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY,
             file_handle BLOB,
-            name TEXT,
+            name BLOB,
             parent_id INTEGER,
             UNIQUE(parent_id, name)
         );
@@ -69,7 +74,7 @@ pub fn ensure_root(tx: &rusqlite::Transaction, fh: &[u8]) -> Result<(), Error> {
             Err(Error::BadRoot)
         }
         Err(Error::NoFile) => {
-            create(tx, ROOT_ID, fh, "")?;
+            create(tx, ROOT_ID, fh, OsStr::new(""))?;
             Ok(())
         }
         Err(e) => Err(e)
@@ -95,26 +100,29 @@ pub fn get_single_id(tx: &rusqlite::Transaction, fh: &[u8]) -> Result<i64, Error
     transform_query_one_err(stmt.query_one((fh,), |x| x.get(0)))
 }
 
-pub fn get_rough_id(tx: &rusqlite::Transaction, parent_id: i64, name: &str)
+pub fn get_rough_id(tx: &rusqlite::Transaction, parent_id: i64, name: &OsStr)
 -> Result<i64, Error> {
     let mut stmt = tx.prepare_cached("
         SELECT id FROM files WHERE name = ?1 AND parent_id = ?2
     ")?;
 
-    transform_query_one_err(stmt.query_one((name, parent_id), |x| x.get(0)))
+    transform_query_one_err(stmt.query_one((name.as_bytes(), parent_id), |x| x.get(0)))
 }
 
-pub fn get_id(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &str)
+pub fn get_id(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &OsStr)
 -> Result<i64, Error> {
     let mut stmt = tx.prepare_cached("
         SELECT id FROM files WHERE file_handle = ?1 AND name = ?2 AND parent_id = ?3
     ")?;
 
-    transform_query_one_err(stmt.query_one((fh, name, parent_id), |x| x.get(0)))
+    transform_query_one_err(stmt.query_one((fh, name.as_bytes(), parent_id), |x| x.get(0)))
 }
 
-fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &str)
+fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &OsStr)
 -> Result<(), Error> {
+    // Return early for invalid UTF-8
+    let Some(name) = name.to_str() else {return Ok(())};
+
     let mut stmt = tx.prepare_cached("
         INSERT INTO suffix_array (parent_id, id, suffix) VALUES(?1, ?2, ?3)
     ")?;
@@ -124,14 +132,14 @@ fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &s
     Ok(())
 }
 
-pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &str)
+pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &OsStr)
 -> Result<i64, Error> {
     let mut stmt = tx.prepare_cached("
         INSERT INTO files (file_handle, parent_id, name) VALUES(?1, ?2, ?3)
         ON CONFLICT DO NOTHING
     ")?;
 
-    let id = match stmt.insert((fh, parent_id, name)) {
+    let id = match stmt.insert((fh, parent_id, name.as_bytes())) {
         Ok(x) => Ok(x),
         Err(rusqlite::Error::StatementChangedRows(0)) =>
             Err(Error::DuplicateFile),
@@ -174,13 +182,13 @@ fn reparent_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64)
 
 pub fn r#move(
     tx:&rusqlite::Transaction, id: i64,
-    new_parent_id: i64, new_name: &str
+    new_parent_id: i64, new_name: &OsStr
 ) -> Result<(), Error> {
     let mut stmt = tx.prepare_cached(indoc! {"
         UPDATE files SET parent_id = ?1, name = ?2 WHERE id = ?3
     "})?;
 
-    match stmt.execute((new_parent_id, new_name, id)) {
+    match stmt.execute((new_parent_id, new_name.as_bytes(), id)) {
         Ok(x) => Ok(x),
         Err(e) if e.sqlite_error_code() ==
             Some(rusqlite::ErrorCode::ConstraintViolation) =>

@@ -69,7 +69,6 @@ pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), E
         let path = entry.path();
         let Some(parent) = path.parent() else {continue};
         let Some(filename) = path.file_name() else {continue};
-        let Ok(filename) = filename.try_into() else {continue};
 
         let (_, fh) = match get_fh(path) {
             Ok(x) => x,

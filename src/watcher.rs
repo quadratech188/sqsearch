@@ -1,4 +1,4 @@
-use std::{ops, path, sync::mpsc, thread, time};
+use std::{ffi::OsStr, ops, path, sync::mpsc, thread, time};
 
 
 use crate::{db, fanotify};
@@ -36,23 +36,26 @@ fn handle_message(tx: &mpsc::Sender<Message>,
     Ok(())
 }
 
-fn get_parent_id(tx: &rusqlite::Transaction, p_fh: &[u8], name: &str)
+fn get_parent_id(tx: &rusqlite::Transaction, p_fh: &[u8], name: &OsStr)
 -> Result<i64, Error> {
         let id = db::get_single_id(&tx, p_fh);
         if let Err(db::Error::NoFile) = id {
-            log::warn!("Failed to find parent of file: {name}")
+            log::warn!("Failed to find parent of file: {}", name.display())
         }
         Ok(id?)
 }
 
-fn handle_create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
+fn handle_create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &OsStr)
 -> Result<(), Error> {
     let parent_id = get_parent_id(tx, p_fh, name)?;
 
     match db::create(tx, parent_id, fh, name) {
         Ok(x) => Ok(x),
         Err(db::Error::DuplicateFile) => {
-            log::warn!("File `{name}` already exists at location, overwriting");
+            log::warn!(
+                "File `{}` already exists at location, overwriting",
+                name.display()
+            );
             db::delete(tx, db::get_rough_id(tx, parent_id, name)?)?;
             db::create(tx, parent_id, fh, name)?;
             return Ok(())
@@ -62,14 +65,17 @@ fn handle_create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
     Ok(())
 }
 
-fn handle_delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
+fn handle_delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &OsStr)
 -> Result<(), Error> {
     let parent_id = get_parent_id(tx, p_fh, name)?;
 
     let id = match db::get_id(tx, parent_id, fh, name) {
         Ok(x) => Ok(x),
         Err(db::Error::NoFile) => {
-            log::warn!("Attempted to delete file `{name}` that doesn't exist");
+            log::warn!(
+                "Attempted to delete file `{}` that doesn't exist", 
+                name.display()
+            );
             return Ok(())
         }
         Err(e) => Err(e)
@@ -81,7 +87,7 @@ fn handle_delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &str)
 
 fn handle_move(
     tx: &rusqlite::Transaction,
-    old_p_fh: &[u8], new_p_fh: &[u8], fh: &[u8], old_name: &str, new_name: &str
+    old_p_fh: &[u8], new_p_fh: &[u8], fh: &[u8], old_name: &OsStr, new_name: &OsStr
 ) -> Result<(), Error> {
     let old_parent_id = get_parent_id(tx, old_p_fh, old_name)?;
     let new_parent_id = get_parent_id(tx, new_p_fh, new_name)?;
@@ -89,8 +95,10 @@ fn handle_move(
     let id = match db::get_id(tx, old_parent_id, fh, old_name) {
         Ok(x) => Ok(x),
         Err(db::Error::NoFile) => {
-            log::warn!("Attempted to move file `{old_name}` that doesn't exist. \
-                creating new file.");
+            log::warn!(
+                "Attempted to move file `{}` that doesn't exist. creating new file.",
+                old_name.display()
+            );
             db::create(tx, new_parent_id, fh, new_name)?;
             return Ok(())
         }

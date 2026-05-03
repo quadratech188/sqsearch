@@ -1,5 +1,5 @@
 use core::slice;
-use std::{ffi, fs, io::Read, mem, ops, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, string, vec};
+use std::{ffi::{self, OsString}, fs, io::Read, mem, ops, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, vec};
 
 use libc;
 
@@ -16,34 +16,30 @@ pub enum Error {
     BadData,
     #[error("From fanotify: {0}")]
     Internal(i32),
-    #[error("While parsing: {0}")]
-    Encoding(#[from] string::FromUtf8Error),
     #[error("While fanotify init: {0}")]
     Init(errno::Errno),
     #[error("While fanotify mark: {0}")]
     Mark(errno::Errno)
 }
 
-// FIXME: Use CString instead of String
-
 #[derive(Debug, Clone)]
 pub enum Event {
     Create {
         p_fh: Vec<u8>,
         fh: Vec<u8>,
-        name: String
+        name: OsString
     },
     Delete {
         p_fh: Vec<u8>,
         fh: Vec<u8>,
-        name: String
+        name: OsString
     },
     Move {
         old_p_fh: Vec<u8>,
         new_p_fh: Vec<u8>,
         fh: Vec<u8>,
-        old_name: String,
-        new_name: String,
+        old_name: OsString,
+        new_name: OsString,
     }
 }
 
@@ -56,14 +52,14 @@ fn get_handle(fid: &libc::fanotify_event_info_fid) -> Vec<u8> {
     data_slice.into()
 }
 
-fn get_name(fid: &libc::fanotify_event_info_fid) -> Result<String, Error> {
+fn get_name(fid: &libc::fanotify_event_info_fid) -> OsString {
     unsafe {
         let handle = fid.handle.as_ptr() as *const file_handle;
         let f_handle = (*handle).f_handle.as_ptr() as *const libc::c_uchar;
         let ptr = f_handle.add((*handle).handle_bytes as usize) as *const libc::c_char;
         let c_str = ffi::CStr::from_ptr(ptr);
         // TODO: Remove unnecessary copy
-        Ok(String::from_utf8(c_str.to_bytes().to_vec())?)
+        OsString::from_encoded_bytes_unchecked(c_str.to_bytes().to_vec())
     }
 }
 
@@ -128,14 +124,14 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
             events.push(Event::Create {
                 p_fh: get_handle(dfid),
                 fh: get_handle(fid),
-                name: get_name(dfid)?
+                name: get_name(dfid)
             });
         }
         if metadata.mask & libc::FAN_DELETE != 0 {
             events.push(Event::Delete {
                 p_fh: get_handle(dfid),
                 fh: get_handle(fid),
-                name: get_name(dfid)?
+                name: get_name(dfid)
             });
         }
     }
@@ -148,8 +144,8 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
             old_p_fh: get_handle(old_dfid),
             new_p_fh: get_handle(new_dfid),
             fh: get_handle(fid),
-            old_name: get_name(old_dfid)?,
-            new_name: get_name(new_dfid)?
+            old_name: get_name(old_dfid),
+            new_name: get_name(new_dfid)
         });
     }
 
