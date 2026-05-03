@@ -1,4 +1,4 @@
-use std::{io, sync::mpsc, thread, time};
+use std::{ffi::OsString, io, sync::mpsc, thread, time};
 
 use crate::db;
 
@@ -36,8 +36,10 @@ fn print_results(
             SELECT f.name FROM files AS f WHERE f.id = ?1
         ")?;
 
-        let names = ids.iter().map(|x| stmt.query_one((x,), |x| x.get(0)))
-            .collect::<Result<Vec<String>, rusqlite::Error>>()?;
+        let names = ids.iter().map(|x| stmt.query_one((x,), |x| {
+                Ok(unsafe {OsString::from_encoded_bytes_unchecked(x.get(0)?)})
+            }))
+            .collect::<Result<Vec<_>, rusqlite::Error>>()?;
 
         let mut path = match db::get_path(conn, ids[0]) {
             Ok(x) => x,

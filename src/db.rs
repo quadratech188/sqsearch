@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path};
+use std::{ffi::{OsStr, OsString}, os::unix::ffi::OsStrExt, path};
 
 const ROOT_ID: i64 = 1;
 
@@ -214,8 +214,12 @@ pub fn get_path(tx: &rusqlite::Connection, id: i64)
     
     loop {
         // More than one instance is OK
-        let (name, parent_id): (String, i64)
-        = match stmt.query_row((ptr,), |x| Ok((x.get(0)?, x.get(1)?))) {
+        let (name, parent_id): (OsString, i64) = match stmt.query_row((ptr,), |x| {
+                Ok((
+                    unsafe {OsString::from_encoded_bytes_unchecked(x.get(0)?)},
+                    x.get(1)?
+                ))
+            }) {
             Ok(x) => Ok(x),
             Err(rusqlite::Error::QueryReturnedNoRows)
             => Err(Error::IncompletePath(id)),
