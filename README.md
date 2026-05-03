@@ -34,7 +34,7 @@ stuff
 ```
 The parent directory `chemistry` is just as important as the filename `notes.pdf`. Which is why the (only) query type supported in SQSearch lets you find substrings in both: `chem/not`.
 
-A natural side effect of method is that the query `chem/` lists all entries in the `chemistry` directory.
+A natural side effect of this method is that the query `chem/` lists all entries in the `chemistry` directory.
 ## Usage
 Index a filesystem:
 ```
