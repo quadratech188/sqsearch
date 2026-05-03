@@ -12,10 +12,10 @@ function load_prefs() {
 	const k = - Math.log(2) / half_life
 	const default_count = Number(prefs['default-count'])
 
-	return [k, default_count, prefs['prefix']]
+	return [k, default_count, prefs['prefix'], prefs['db']]
 }
 
-const [k, default_count, prefix] = load_prefs()
+const [k, default_count, prefix, db] = load_prefs()
 
 type HistoryData = {
 	score: number,
@@ -95,7 +95,7 @@ function use_sqsearch(on_line: (line: string) => void): (line: string) => void {
 	useEffect(() => {callback_ref.current = on_line}, [on_line])
 
 	useEffect(() => {
-		const instance = spawn('sqsearch', ['query'])
+		const instance = spawn('sqsearch', ['--db', db, 'query'])
 		proc_ref.current = instance
 
 		const reader = readline.createInterface(instance.stdout)

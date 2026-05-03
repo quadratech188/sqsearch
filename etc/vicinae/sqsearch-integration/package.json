@@ -42,7 +42,14 @@
 		  "required": true,
 		  "type": "textfield",
 		  "default": "REPLACE WITH FILESYSTEM LOCATION"
-
+	  },
+	  {
+		  "name": "db",
+		  "title": "Database",
+		  "description": "Location of filesystem database",
+		  "required": true,
+		  "type": "textfield",
+		  "default": "REPLACE WITH DATABASE LOCATION"
 	  }
   ],
   "scripts": {
