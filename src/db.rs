@@ -1,6 +1,7 @@
 use std::{ffi::{OsStr, OsString}, os::unix::ffi::OsStrExt, path};
 
 const ROOT_ID: i64 = 1;
+const MAX_SUFFIX_BYTES: usize = 15;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -130,6 +131,10 @@ fn get_parent_and_name(tx: &rusqlite::Transaction, id: i64)
     )?)
 }
 
+fn cut_suffix_to_length(slice: &str) -> &str {
+    &slice[..slice.floor_char_boundary(MAX_SUFFIX_BYTES)]
+}
+
 fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &OsStr)
 -> Result<(), Error> {
     // Return early for invalid UTF-8
@@ -139,7 +144,7 @@ fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &O
         INSERT INTO suffix_array (parent_id, id, suffix) VALUES(?1, ?2, ?3)
     ")?;
     for (i, _) in name.char_indices() {
-        stmt.execute((parent_id, id, &name[i..]))?;
+        stmt.execute((parent_id, id, cut_suffix_to_length(&name[i..])))?;
     }
     Ok(())
 }
@@ -170,7 +175,7 @@ fn delete_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &O
         DELETE FROM suffix_array WHERE parent_id = ?1 AND id = ?2 AND parent_id = ?3
     ")?;
     for (i, _) in name.char_indices() {
-        stmt.execute((parent_id, id, &name[i..]))?;
+        stmt.execute((parent_id, id, cut_suffix_to_length(&name[i..])))?;
     }
     Ok(())
 }
@@ -273,10 +278,35 @@ pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> 
     let mut params = vec![];
     let mut conditions = vec![];
 
+    macro_rules! add_suffix_cond_raw {
+        ($table: expr, $suffix: expr) => {
+            params.push($suffix.to_string());
+            params.push(format!("{}\u{10FFFF}", $suffix));
+            conditions.push(format!("{}.suffix >= ? AND {}.suffix < ?", $table, $table));
+        };
+    }
+    macro_rules! add_suffix_cond {
+        ($table: expr, $suffix: expr) => {
+            if $suffix.len() <= MAX_SUFFIX_BYTES {
+                add_suffix_cond_raw!($table, $suffix);
+            }
+            else {
+                add_suffix_cond_raw!($table, cut_suffix_to_length($suffix));
+                joins.push(format!("files AS temp_{}", $table));
+                conditions.push(format!("temp_{}.id == {}.id", $table, $table));
+                add_file_cond!(format!("temp_{}", $table), $suffix);
+            }
+        };
+    }
+    macro_rules! add_file_cond {
+        ($table: expr, $suffix: expr) => {
+            params.push(format!("%{}%", $suffix.to_string()));
+            conditions.push(format!("LOWER(CAST({}.name AS TEXT)) LIKE LOWER(?)", $table));
+        };
+    }
+
     joins.push(format!("suffix_array AS s{best_index}"));
-    params.push(segments[best_index].to_string());
-    params.push(format!("{}\u{10FFFF}", segments[best_index]));
-    conditions.push(format!("s{best_index}.suffix >= ? AND s{best_index}.suffix < ?"));
+    add_suffix_cond!(format!("s{best_index}"), segments[best_index]);
 
     let mut l = best_index;
     let mut r = best_index;
@@ -286,25 +316,21 @@ pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> 
             r += 1;
 
             joins.push(format!("suffix_array AS s{r}"));
-            conditions.push(format!("s{}.parent_id = s{}.id", r, r - 1));
+            conditions.push(format!("s{}.parent_id == s{}.id", r, r - 1));
 
             if segments[r] == "" {continue}
 
-            params.push(segments[r].to_string());
-            params.push(format!("{}\u{10FFFF}", segments[r]));
-            conditions.push(format!("s{r}.suffix >= ? AND s{r}.suffix < ?"));
-
+            add_suffix_cond!(format!("s{r}"), segments[r]);
         }
         else {
             l -= 1;
 
             joins.push(format!("files AS s{l}"));
-            conditions.push(format!("s{}.id = s{}.parent_id", l, l + 1));
+            conditions.push(format!("s{}.id == s{}.parent_id", l, l + 1));
 
             if segments[l] == "" {continue}
 
-            params.push(format!("%{}%", segments[l].to_string()));
-            conditions.push(format!("LOWER(CAST(s{l}.name AS TEXT)) LIKE LOWER(?)"));
+            add_file_cond!(format!("s{l}"), segments[l]);
         }
     }
 
