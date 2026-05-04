@@ -7,7 +7,7 @@ pub enum Error {
     #[error("DB error: {0}")]
     SQLite(#[from] rusqlite::Error),
     #[error("Bad query:")]
-    BadQuery(Vec<String>),
+    BadQuery,
     #[error("Failed to find path for file")]
     IncompletePath,
 
@@ -54,7 +54,6 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
             PRIMARY KEY (parent_id, suffix, id)
         ) WITHOUT ROWID;
 
-        CREATE INDEX IF NOT EXISTS backwards_idx ON suffix_array (id, suffix);
         CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
 
         COMMIT;
@@ -116,6 +115,21 @@ pub fn get_id(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &OsSt
     transform_query_one_err(stmt.query_one((fh, name.as_bytes(), parent_id), |x| x.get(0)))
 }
 
+fn get_parent_and_name(tx: &rusqlite::Transaction, id: i64)
+-> Result<(i64, OsString), Error> {
+    let mut stmt = tx.prepare_cached("
+        SELECT parent_id, name FROM files WHERE id = ?1;
+    ")?;
+
+    Ok(stmt.query_one(
+        (id,),
+        |row| Ok((
+                row.get(0)?,
+                unsafe {OsString::from_encoded_bytes_unchecked(row.get(1)?)}
+            ))
+    )?)
+}
+
 fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &OsStr)
 -> Result<(), Error> {
     // Return early for invalid UTF-8
@@ -148,24 +162,31 @@ pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &OsSt
     Ok(id)
 }
 
-fn delete_suffixes(tx: &rusqlite::Transaction, id: i64) -> Result<(), Error> {
+fn delete_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &OsStr)
+-> Result<(), Error> {
+    let Some(name) = name.to_str() else {return Ok(())};
+
     let mut stmt = tx.prepare_cached("
-        DELETE FROM suffix_array WHERE id = ?1
+        DELETE FROM suffix_array WHERE parent_id = ?1 AND id = ?2 AND parent_id = ?3
     ")?;
-    stmt.execute((id,))?;
+    for (i, _) in name.char_indices() {
+        stmt.execute((parent_id, id, &name[i..]))?;
+    }
     Ok(())
 }
 
 pub fn delete(tx: &rusqlite::Transaction, id: i64)
 -> Result<(), Error> {
-    // We have to return something for query_one to work
+    let (parent_id, name) = get_parent_and_name(tx, id)?;
+
+    delete_suffixes(tx, parent_id, id, &name)?;
+
     let mut stmt = tx.prepare_cached("
-        DELETE FROM files WHERE id = ?1 RETURNING id
+        DELETE FROM files WHERE id = ?1
     ")?;
 
-    transform_query_one_err(stmt.query_one((id,), |_| {Ok(())}))?;
+    transform_query_one_err(stmt.execute((id,)))?;
 
-    delete_suffixes(tx, id)?;
     Ok(())
 }
 
@@ -173,6 +194,8 @@ pub fn r#move(
     tx:&rusqlite::Transaction, id: i64,
     new_parent_id: i64, new_name: &OsStr
 ) -> Result<(), Error> {
+    let (old_parent_id, old_name) = get_parent_and_name(tx, id)?;
+
     let mut stmt = tx.prepare_cached("
         UPDATE files SET parent_id = ?1, name = ?2 WHERE id = ?3
     ")?;
@@ -187,7 +210,7 @@ pub fn r#move(
 
     // TODO: Reuse suffixes if old name == new name
 
-    delete_suffixes(tx, id)?;
+    delete_suffixes(tx, old_parent_id, id, &old_name)?;
     create_suffixes(tx, new_parent_id, id, new_name)
 }
 
@@ -235,73 +258,67 @@ pub fn get_path(tx: &rusqlite::Connection, id: i64)
     Ok(path)
 }
 
-fn estimate_specifity(query: &str) -> i64 {
-    query.len() as i64
+fn estimate_specifity(segments: &[&str]) -> Vec<i64> {
+    segments.iter().map(|x| x.len() as i64).collect()
 }
 
-pub fn prepare_query<'a>(segments: &[&str]) -> Result<(String, Vec<String>), Error> {
+pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> {
+    let scores = estimate_specifity(segments);
 
-    let score = |x| estimate_specifity(segments[x]);
-
-    let Some(best_segment) = (0..segments.len())
-        .max_by_key(|&x| score(x)) else {
-        return Err(Error::BadQuery(segments.iter().map(|&x| x.into()).collect()))
+    let Some(best_index) = (0..scores.len()).max_by_key(|&x| scores[x]) else {
+        return Err(Error::BadQuery)
     };
 
-    // TODO: Allow multiple best segments if they're specific enough
-    
-    let mut l: i64 = best_segment as i64 - 1;
-    let mut r: i64 = best_segment as i64 + 1;
-    let length = segments.len() as i64;
+    let mut joins = vec![];
+    let mut params = vec![];
+    let mut conditions = vec![];
 
-    let mut join_order = vec![best_segment];
+    joins.push(format!("suffix_array AS s{best_index}"));
+    params.push(segments[best_index].to_string());
+    params.push(format!("{}\u{10FFFF}", segments[best_index]));
+    conditions.push(format!("s{best_index}.suffix >= ? AND s{best_index}.suffix < ?"));
 
-    // l underflows to 2^64 - 1 > segments.len()
-    while 0 <= l || r < length {
-        if length <= r ||
-            (0 <= l && r < length && score(l as usize) > score(r as usize)) {
-            join_order.push(l as usize);
-            l -= 1;
+    let mut l = best_index;
+    let mut r = best_index;
+
+    while 0 < l || r < scores.len() - 1 {
+        if 0 == l || (r < scores.len() - 1 && scores[l - 1] < scores[r + 1]) {
+            r += 1;
+
+            joins.push(format!("suffix_array AS s{r}"));
+            conditions.push(format!("s{}.parent_id = s{}.id", r, r - 1));
+
+            if segments[r] == "" {continue}
+
+            params.push(segments[r].to_string());
+            params.push(format!("{}\u{10FFFF}", segments[r]));
+            conditions.push(format!("s{r}.suffix >= ? AND s{r}.suffix < ?"));
+
         }
         else {
-            join_order.push(r as usize);
-            r += 1;
+            l -= 1;
+
+            joins.push(format!("files AS s{l}"));
+            conditions.push(format!("s{}.id = s{}.parent_id", l, l + 1));
+
+            if segments[l] == "" {continue}
+
+            params.push(format!("%{}%", segments[l].to_string()));
+            conditions.push(format!("LOWER(CAST(s{l}.name AS TEXT)) LIKE LOWER(?)"));
         }
     }
 
-    let mut params: Vec<String> = vec![];
-
-    let len = segments.len();
-
     let mut query = String::from("SELECT DISTINCT ");
 
-    query += &(0..len)
-        .map(|x| format!("s{}.id AS s{}", x, x))
+    query += &(0..segments.len())
+        .map(|x| format!("s{x}.id"))
         .collect::<Vec<_>>()
         .join(", ");
 
     query += " FROM ";
-
-    query += &(0..len)
-        .map(|x| format!("suffix_array AS s{}", join_order[x]))
-        .collect::<Vec<_>>()
-        .join(" CROSS JOIN ");
-
+    query += &joins.join(" CROSS JOIN ");
     query += " WHERE ";
-
-    query += &(0..len - 1)
-        .map(|x| format!("s{}.id = s{}.parent_id AND ", x, x + 1))
-        .collect::<Vec<_>>()
-        .concat();
-
-    query += &(0..len)
-        .map(|x| {
-                params.push(segments[x].into());
-                params.push(format!("{}\u{10FFFF}", segments[x]));
-                format!("s{x}.suffix >= ? AND s{x}.suffix < ?")
-            })
-        .collect::<Vec<_>>()
-        .join(" AND ");
+    query += &conditions.join(" AND ");
 
     Ok((query, params))
 }
