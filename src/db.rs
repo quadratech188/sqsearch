@@ -49,8 +49,8 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 
         CREATE TABLE IF NOT EXISTS suffix_array (
             parent_id INTEGER,
-            id INTEGER,
             suffix TEXT COLLATE NOCASE,
+            id INTEGER,
             PRIMARY KEY (suffix, id)
         ) WITHOUT ROWID;
 
@@ -113,19 +113,14 @@ pub fn get_id(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &OsSt
     transform_query_one_err(stmt.query_one((fh, name.as_bytes(), parent_id), |x| x.get(0)))
 }
 
-fn get_parent_and_name(tx: &rusqlite::Transaction, id: i64)
--> Result<(i64, OsString), Error> {
+fn get_name(tx: &rusqlite::Transaction, id: i64) -> Result<OsString, Error> {
     let mut stmt = tx.prepare_cached("
-        SELECT parent_id, name FROM files WHERE id = ?1;
+        SELECT name FROM files WHERE id = ?1;
     ")?;
 
-    Ok(stmt.query_one(
-        (id,),
-        |row| Ok((
-                row.get(0)?,
-                unsafe {OsString::from_encoded_bytes_unchecked(row.get(1)?)}
-            ))
-    )?)
+    Ok(unsafe {OsString::from_encoded_bytes_unchecked(
+        stmt.query_one((id,), |x| x.get(0))?
+    )})
 }
 
 fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &OsStr)
@@ -160,24 +155,22 @@ pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &OsSt
     Ok(id)
 }
 
-fn delete_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &OsStr)
+fn delete_suffixes(tx: &rusqlite::Transaction, id: i64, name: &OsStr)
 -> Result<(), Error> {
     let Some(name) = name.to_str() else {return Ok(())};
 
     let mut stmt = tx.prepare_cached("
-        DELETE FROM suffix_array WHERE parent_id = ?1 AND id = ?2 AND parent_id = ?3
+        DELETE FROM suffix_array WHERE suffix = ?1 AND id = ?2
     ")?;
     for (i, _) in name.char_indices() {
-        stmt.execute((parent_id, id, &name[i..]))?;
+        stmt.execute((&name[i..], id))?;
     }
     Ok(())
 }
 
 pub fn delete(tx: &rusqlite::Transaction, id: i64)
 -> Result<(), Error> {
-    let (parent_id, name) = get_parent_and_name(tx, id)?;
-
-    delete_suffixes(tx, parent_id, id, &name)?;
+    delete_suffixes(tx, id, &get_name(tx, id)?)?;
 
     let mut stmt = tx.prepare_cached("
         DELETE FROM files WHERE id = ?1
@@ -192,7 +185,7 @@ pub fn r#move(
     tx:&rusqlite::Transaction, id: i64,
     new_parent_id: i64, new_name: &OsStr
 ) -> Result<(), Error> {
-    let (old_parent_id, old_name) = get_parent_and_name(tx, id)?;
+    let old_name = get_name(tx, id)?;
 
     let mut stmt = tx.prepare_cached("
         UPDATE files SET parent_id = ?1, name = ?2 WHERE id = ?3
@@ -208,7 +201,7 @@ pub fn r#move(
 
     // TODO: Reuse suffixes if old name == new name
 
-    delete_suffixes(tx, old_parent_id, id, &old_name)?;
+    delete_suffixes(tx, id, &old_name)?;
     create_suffixes(tx, new_parent_id, id, new_name)
 }
 
