@@ -1,4 +1,4 @@
-import { Action, ActionPanel, Clipboard, closeMainWindow, getPreferenceValues, Icon, List, LocalStorage, open, showInFileBrowser} from "@vicinae/api";
+import { Action, ActionPanel, Clipboard, closeMainWindow, Detail, getPreferenceValues, Icon, List, LocalStorage, open, showInFileBrowser} from "@vicinae/api";
 import { useLocalStorage } from "@raycast/utils"
 import { useCallback, useEffect, useRef, useState} from "react";
 import {ChildProcessWithoutNullStreams, spawn} from "node:child_process"
@@ -89,30 +89,53 @@ class Result {
 	}
 }
 
-function use_sqsearch(on_line: (line: string) => void): (line: string) => void {
+function use_sqsearch(on_line: (line: string) => void):
+[(line: string) => void, null | string] {
 	const proc_ref = useRef<ChildProcessWithoutNullStreams | null>(null)
 
 	const callback_ref = useRef(on_line)
 	useEffect(() => {callback_ref.current = on_line}, [on_line])
 
+	const [error, set_error] = useState<null | string>(null)
+
 	useEffect(() => {
 		const instance = spawn('sqsearch', ['--db', db, 'query'])
 		proc_ref.current = instance
 
+		let stderr_buffer = ''
+
+		instance.on('error', err => {})
+
+		instance.stderr.on('data', chunk => {
+			stderr_buffer += chunk.toString()
+		})
+
 		const reader = readline.createInterface(instance.stdout)
 		reader.on('line', callback_ref.current)
+
+		instance.on('close', code => {
+			if (code === -2) {
+				set_error(`### Failed to find \`sqsearch\`! \
+					get it [here](https://github.com/quadratech188/sqsearch)`)
+			}
+			else if (code !== 0) {
+				set_error(`\`\`\` Exit Code ${code}\n${stderr_buffer}\n\`\`\``)
+			}
+		})
 
 		return () => {
 			instance.kill()
 		}
+
 	}, [])
 
 	const send = useCallback((line: string) => {
 		proc_ref.current?.stdin.write(line)
 	}, [])
 
-	return send
+	return [send, error]
 }
+
 
 export default function SQSearch() {
 	const [search_text, set_query] = useState("")
@@ -138,7 +161,7 @@ export default function SQSearch() {
 	const query_ref = useRef('')
 	const active_query_ref = useRef('')
 
-	const send_query = use_sqsearch(line => {
+	const [send_query, error] = use_sqsearch(line => {
 		if (line.startsWith('BEGIN')) {
 			active_query_ref.current = line.slice('BEGIN '.length)
 			return
@@ -184,6 +207,20 @@ export default function SQSearch() {
 	const select = (x: string) => {
 		history.select(x)
 		save_history(history.serialize())
+	}
+
+	if (error) {
+		return <Detail
+			markdown={`\n# \`sqsearch\` encountered an error!\n${error}`}
+
+			actions={<ActionPanel>
+				<Action.OpenInBrowser
+					shortcut={'open'}
+					title='Open Link'
+					url={'https://github.com/quadratech188/sqsearch'}
+					/>
+			</ActionPanel>}
+		/>
 	}
 
 	return (
