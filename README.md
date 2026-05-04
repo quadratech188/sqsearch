@@ -55,3 +55,4 @@ sqsearch --db ./db.sqlite3 query
 - Placing the file database in the monitored filesystem itself may trigger unexpected behavior.
 - Symlinks are treated as normal files, paths are *not* resolved.
 - You can only index entire filesystems, you cannot restrict the database to specific folders.
+- The index is ~~HUGE~~ slightly huge (800MB for 1.3 million files)
