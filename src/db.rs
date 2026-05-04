@@ -2,8 +2,6 @@ use std::{ffi::{OsStr, OsString}, os::unix::ffi::OsStrExt, path};
 
 const ROOT_ID: i64 = 1;
 
-use indoc::indoc;
-
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("DB error: {0}")]
@@ -36,7 +34,7 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     // But it doesn't make sense to run queries on invalid UTF-8, so we use TEXT for suffix_array,
     // and we just don't include entries for invalid UTF-8s at all
 
-    conn.execute_batch(indoc! {"
+    conn.execute_batch("
         BEGIN;
 
         CREATE TABLE IF NOT EXISTS files (
@@ -60,7 +58,7 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
         CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
 
         COMMIT;
-    "})?;
+    ")?;
 
     Ok(())
 }
@@ -171,22 +169,13 @@ pub fn delete(tx: &rusqlite::Transaction, id: i64)
     Ok(())
 }
 
-fn reparent_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64)
--> Result<(), Error> {
-    let mut stmt = tx.prepare_cached("
-        UPDATE suffix_array SET parent_id = ?1 WHERE id = ?2
-    ")?;
-    stmt.execute((parent_id, id))?;
-    Ok(())
-}
-
 pub fn r#move(
     tx:&rusqlite::Transaction, id: i64,
     new_parent_id: i64, new_name: &OsStr
 ) -> Result<(), Error> {
-    let mut stmt = tx.prepare_cached(indoc! {"
+    let mut stmt = tx.prepare_cached("
         UPDATE files SET parent_id = ?1, name = ?2 WHERE id = ?3
-    "})?;
+    ")?;
 
     match stmt.execute((new_parent_id, new_name.as_bytes(), id)) {
         Ok(x) => Ok(x),

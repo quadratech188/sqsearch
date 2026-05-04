@@ -1,4 +1,4 @@
-use std::{ffi, fmt::format, io, mem, os::unix::ffi::OsStrExt, path};
+use std::{ffi, io, mem, os::unix::ffi::OsStrExt, path};
 
 use anyhow::Context;
 

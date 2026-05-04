@@ -1,4 +1,4 @@
-use std::{error, path};
+use std::path;
 
 use clap::Parser;
 
