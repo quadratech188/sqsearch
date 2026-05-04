@@ -51,10 +51,8 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
             parent_id INTEGER,
             id INTEGER,
             suffix TEXT COLLATE NOCASE,
-            PRIMARY KEY (parent_id, suffix, id)
+            PRIMARY KEY (suffix, id)
         ) WITHOUT ROWID;
-
-        CREATE INDEX IF NOT EXISTS suffix_idx ON suffix_array (suffix);
 
         COMMIT;
     ")?;
@@ -285,15 +283,13 @@ pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> 
         if 0 == l || (r < scores.len() - 1 && scores[l - 1] < scores[r + 1]) {
             r += 1;
 
-            joins.push(format!("suffix_array AS s{r}"));
+            joins.push(format!("files AS s{r}"));
             conditions.push(format!("s{}.parent_id = s{}.id", r, r - 1));
 
             if segments[r] == "" {continue}
 
-            params.push(segments[r].to_string());
-            params.push(format!("{}\u{10FFFF}", segments[r]));
-            conditions.push(format!("s{r}.suffix >= ? AND s{r}.suffix < ?"));
-
+            params.push(format!("%{}%", segments[r].to_string()));
+            conditions.push(format!("LOWER(CAST(s{r}.name AS TEXT)) LIKE LOWER(?)"));
         }
         else {
             l -= 1;
