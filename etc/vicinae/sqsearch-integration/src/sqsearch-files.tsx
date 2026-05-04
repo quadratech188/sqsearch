@@ -1,4 +1,5 @@
 import { Action, ActionPanel, Clipboard, closeMainWindow, getPreferenceValues, Icon, List, LocalStorage, open, showInFileBrowser} from "@vicinae/api";
+import { useLocalStorage } from "@raycast/utils"
 import { useCallback, useEffect, useRef, useState} from "react";
 import {ChildProcessWithoutNullStreams, spawn} from "node:child_process"
 import readline from "node:readline"
@@ -113,28 +114,6 @@ function use_sqsearch(on_line: (line: string) => void): (line: string) => void {
 	return send
 }
 
-function use_history() {
-	const [ready, set_ready] = useState(false)
-	const history_ref = useRef(new History([]))
-
-	useEffect(() => {(async () => {
-		let history: string | undefined
-			= await LocalStorage.getItem('history')
-
-		if (history !== undefined) {
-			history_ref.current = new History(JSON.parse(history))
-		}
-		set_ready(true)
-	})()}, [])
-
-	const save_history = useCallback(async () => {
-		await LocalStorage.setItem('history',
-		     JSON.stringify(history_ref.current.serialize()))
-	}, [])
-
-	return {history_ref, save_history, ready}
-}
-
 export default function SQSearch() {
 	const [search_text, set_query] = useState("")
 	const [count, set_count] = useState(default_count)
@@ -178,12 +157,16 @@ export default function SQSearch() {
 		const path = line.slice('ITEM '.length)
 		result_ref.current.add(path)
 	})
-	const {history_ref, save_history, ready} = use_history()
-	const result_ref = useRef(new Result(history_ref.current))
+
+	const {value: serialized_history, setValue: save_history, isLoading: loading}
+		= useLocalStorage<SerializedHistory>("history", [])
+	const history = new History(serialized_history || [])
+
+	const result_ref = useRef(new Result(history))
 
 	useEffect(() => {
-		if (!ready) return
-		result_ref.current = new Result(history_ref.current)
+		if (loading) return
+		result_ref.current = new Result(history)
 
 		if (search_text === '') return
 
@@ -192,21 +175,21 @@ export default function SQSearch() {
 		console.log(`Query: ${query}`)
 
 		send_query(query + '\n')
-	}, [search_text, count, ready])
+	}, [search_text, count, loading])
 
 	useEffect(() => {
 		set_count(default_count)
 	}, [search_text])
 
 	const select = (x: string) => {
-		history_ref.current.select(x)
-		save_history()
+		history.select(x)
+		save_history(history.serialize())
 	}
 
 	return (
 	<List searchBarPlaceholder="Search files..."
 		onSearchTextChange={set_query}
-		isLoading={!ready}>
+		isLoading={loading}>
 		<List.Section title={`Seen before (${ui_results.known.length})`}>
 			{ui_results.known.map((path, index) => (
 			<FilePanel key={`${index}-${path}`}

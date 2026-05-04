@@ -18,39 +18,38 @@
     }
   ],
   "preferences": [
-	  {
-		  "name": "half-life",
-		  "title": "Score Half-Life",
-		  "description": "Determines how fast file scores decay (in days)",
-		  "required": true,
-		  "type": "textfield",
-		  "default": "30"
-	  },
-	  {
-		  "name": "default-count",
-		  "title": "Default maximum number of results",
-		  "description": "Determines how many query results are processed.",
-		  "required": true,
-		  "type": "textfield",
-		  "default": "128"
-
-	  },
-	  {
-		  "name": "prefix",
-		  "title": "Prefix",
-		  "description": "Location of indexed filesystem",
-		  "required": true,
-		  "type": "textfield",
-		  "default": "REPLACE WITH FILESYSTEM LOCATION"
-	  },
-	  {
-		  "name": "db",
-		  "title": "Database",
-		  "description": "Location of filesystem database",
-		  "required": true,
-		  "type": "textfield",
-		  "default": "REPLACE WITH DATABASE LOCATION"
-	  }
+    {
+      "name": "half-life",
+      "title": "Score Half-Life",
+      "description": "Determines how fast file scores decay (in days)",
+      "required": true,
+      "type": "textfield",
+      "default": "30"
+    },
+    {
+      "name": "default-count",
+      "title": "Default maximum number of results",
+      "description": "Determines how many query results are processed.",
+      "required": true,
+      "type": "textfield",
+      "default": "128"
+    },
+    {
+      "name": "prefix",
+      "title": "Prefix",
+      "description": "Location of indexed filesystem",
+      "required": true,
+      "type": "textfield",
+      "default": "REPLACE WITH FILESYSTEM LOCATION"
+    },
+    {
+      "name": "db",
+      "title": "Database",
+      "description": "Location of filesystem database",
+      "required": true,
+      "type": "textfield",
+      "default": "REPLACE WITH DATABASE LOCATION"
+    }
   ],
   "scripts": {
     "build": "vici build",
@@ -59,10 +58,11 @@
     "lint": "vici lint"
   },
   "dependencies": {
+    "@raycast/utils": "^2.2.4",
     "@vicinae/api": "^0.19.9"
   },
   "devDependencies": {
-    "typescript": "^5.9.2",
-    "@biomejs/biome": "2.3.2"
+    "@biomejs/biome": "2.3.2",
+    "typescript": "^5.9.2"
   }
 }
