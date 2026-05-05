@@ -3,7 +3,7 @@
   "name": "sqsearch-integration",
   "title": "SQSearch integration",
   "description": "Search files with SQSearch",
-  "categories": [],
+  "categories": ["Data"],
   "license": "MIT",
   "author": "quadratech188",
   "contributors": [],
