@@ -56,3 +56,9 @@ sqsearch --db ./db.sqlite3 query
 - Symlinks are treated as normal files, paths are *not* resolved.
 - You can only index entire filesystems, you cannot restrict the database to specific folders.
 - The index is ~~HUGE~~ slightly huge (800MB for 1.3 million files)
+
+## TODO
+- Support BTRFS subvolumes
+    - Add instructions for proper setup
+    - filter `fsid`s (https://lwn.net/Articles/948846/)
+- Look into using overlayfs for watching specific folders?
