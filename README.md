@@ -45,7 +45,10 @@ Watch the filesystem for changes:
 sudo sqsearch --db ./db.sqlite3 watch /mnt/data
 ```
 >[!NOTE]
-> `sudo` is unfortunately required to watch entire filesystems.
+> `sudo` is required to watch entire filesystems.
+
+>[!NOTE]
+> When using BTRFS, The kernel only supports `fanotify` for the root subvolume. You will need to mount and provide it as `--btrfs-root`.
 
 Query:
 ```
@@ -54,11 +57,9 @@ sqsearch --db ./db.sqlite3 query
 ## Limitations
 - Placing the file database in the monitored filesystem itself may trigger unexpected behavior.
 - Symlinks are treated as normal files, paths are *not* resolved.
-- You can only index entire filesystems, you cannot restrict the database to specific folders.
+- You can choose to index specific folders, but the watcher will still have to process events from the entire filesystem
 - The index is ~~HUGE~~ slightly huge (800MB for 1.3 million files)
 
 ## TODO
-- Support BTRFS subvolumes
-    - Add instructions for proper setup
-    - filter `fsid`s (https://lwn.net/Articles/948846/)
+- Exclude folders with specific names (`node_modules`) from index
 - Look into using overlayfs for watching specific folders?
