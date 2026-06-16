@@ -1,39 +1,19 @@
 use std::{ffi::OsStr, ops, path, sync::mpsc, thread, time};
 
+use crate::{GlobalArgs, db, fanotify, watchpath};
 
-use crate::{db, fanotify};
+#[derive(clap::Args, Debug, Clone)]
+pub struct WatchArgs {
+    #[command(flatten)]
+    watch_path: watchpath::WatchPathArgs
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("Messaging error")]
-    Messaging,
     #[error(transparent)]
     Fanotify(#[from] fanotify::Error),
     #[error(transparent)]
     DB(#[from] db::Error)
-}
-
-#[derive(Debug)]
-enum Message {
-    Error(Error),
-    Events(Vec<fanotify::Event>)
-}
-
-fn handle_message(tx: &mpsc::Sender<Message>,
-    msg: Result<Vec<fanotify::Event>, fanotify::Error>)
--> Result<(), Error> {
-    let msg = match msg {
-        Ok(x) => x,
-        Err(e) => {
-            log::warn!("fanotify error: {}", e);
-            return Ok(())
-        }
-    };
-
-    tx.send(Message::Events(msg))
-        .map_err(|_| Error::Messaging)?;
-
-    Ok(())
 }
 
 fn get_parent_id(tx: &rusqlite::Transaction, p_fh: &[u8], name: &OsStr)
@@ -141,51 +121,34 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &Vec<fanotify::Event>)
     Ok(())
 }
 
-pub fn watch(path: &path::Path, conn: &mut rusqlite::Connection) -> Result<(), Error> {
+fn watch(path: &path::Path, filter: watchpath::Filter, conn: &mut rusqlite::Connection)
+-> Result<(), Error> {
     let (tx, rx) = mpsc::channel();
 
     let path_buf = path.to_path_buf();
 
     let _watch_thread = thread::spawn(move || {
-        let mut result = Ok(());
-
-        let e = fanotify::watch(&path_buf, &mut |x| {
-            handle_message(&tx, x)
-                .map_or_else(|e| {
-                    result = Err(e);
-                    ops::ControlFlow::Break(())
-                }, |_| ops::ControlFlow::Continue(()))
-        });
-
-        let _ = e.map_err(|e| tx.send(Message::Error(e.into()))
-            .expect("Failed to send error; panicking"));
-        let _ = result.map_err(|e| tx.send(Message::Error(e))
-            .expect("Failed to send error; panicking"));
+        fanotify::watch(&path_buf, &filter, &mut |x| {
+            tx.send(x.clone()).unwrap();
+            ops::ControlFlow::Continue(())
+        }).unwrap()
     });
 
     let debounce_duration = time::Duration::from_millis(100);
     let mut debounce_queue = vec![];
 
     loop {
-        let first = rx.recv()
-            .map_err(|_| Error::Messaging)?;
-        let first = match first {
-            Message::Error(e) => return Err(e),
-            Message::Events(x) => x
-        };
+        let first = rx.recv().unwrap();
+
         debounce_queue.extend_from_slice(&first);
 
         loop {
             let msg = match rx.recv_timeout(debounce_duration) {
                 Ok(x) => x,
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected)
-                    => return Err(Error::Messaging),
+                _ => panic!()
             };
-            let msg = match msg {
-                Message::Error(e) => return Err(e),
-                Message::Events(x) => x
-            };
+
             debounce_queue.extend_from_slice(&msg);
         }
 
@@ -196,4 +159,18 @@ pub fn watch(path: &path::Path, conn: &mut rusqlite::Connection) -> Result<(), E
         }
         debounce_queue.clear();
     }
+}
+
+pub fn exec(globals: &GlobalArgs, args: &WatchArgs) -> anyhow::Result<()> {
+    let mut conn = rusqlite::Connection::open_with_flags(
+        &globals.db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+    )?;
+
+    db::prepare_db(&conn)?;
+
+    let (path, filter) = watchpath::prepare_fanotify(&args.watch_path)?;
+
+    watch(&path, filter, &mut conn)?;
+    Ok(())
 }

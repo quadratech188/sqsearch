@@ -7,6 +7,8 @@ mod fanotify;
 mod indexer;
 mod watcher;
 mod queryer;
+mod watchpath;
+mod util;
 
 #[derive(clap::Parser, Debug)]
 struct CLI {
@@ -24,26 +26,9 @@ struct GlobalArgs {
 
 #[derive(clap::Subcommand, Debug, Clone)]
 enum Commands {
-    Watch(WatchArgs),
+    Watch(watcher::WatchArgs),
     Index(IndexArgs),
     Query(QueryArgs)
-}
-
-#[derive(clap::Args, Debug, Clone)]
-struct WatchArgs {
-    path: path::PathBuf
-}
-
-fn watch(globals: GlobalArgs, args: WatchArgs) -> Result<(), anyhow::Error> {
-    let mut conn = rusqlite::Connection::open_with_flags(
-        globals.db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-    )?;
-
-    db::prepare_db(&conn)?;
-    watcher::watch(&args.path, &mut conn)?;
-
-    Ok(())
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -90,7 +75,7 @@ fn main() -> Result<(), anyhow::Error> {
     let args = CLI::parse();
 
     match args.command {
-        Commands::Watch(x) => watch(args.globals, x),
+        Commands::Watch(x) => watcher::exec(&args.globals, &x),
         Commands::Index(x) => index(args.globals, x),
         Commands::Query(x) => query(args.globals, x)
     }

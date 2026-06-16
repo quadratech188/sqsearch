@@ -3,12 +3,7 @@ use std::{ffi::{self, OsString}, fs, io::{self, Read}, mem, ops, os::{fd::FromRa
 
 use libc;
 
-#[repr(C)]
-pub struct file_handle {
-    pub handle_bytes: libc::c_uint,
-    pub handle_type: libc::c_int,
-    pub f_handle: [libc::c_uchar; 0]
-}
+use crate::{util, watchpath};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -44,9 +39,9 @@ pub enum Event {
 }
 
 fn get_handle(fid: &libc::fanotify_event_info_fid) -> Vec<u8> {
-    let handle = fid.handle.as_ptr() as *const file_handle;
+    let handle = fid.handle.as_ptr() as *const util::file_handle;
     let begin = handle as *const u8;
-    let size = size_of::<file_handle>() + unsafe {(*handle).handle_bytes} as usize;
+    let size = size_of::<util::file_handle>() + unsafe {(*handle).handle_bytes} as usize;
     let data_slice = unsafe {slice::from_raw_parts(begin, size / size_of::<u8>())};
 
     data_slice.into()
@@ -54,7 +49,7 @@ fn get_handle(fid: &libc::fanotify_event_info_fid) -> Vec<u8> {
 
 fn get_name(fid: &libc::fanotify_event_info_fid) -> OsString {
     unsafe {
-        let handle = fid.handle.as_ptr() as *const file_handle;
+        let handle = fid.handle.as_ptr() as *const util::file_handle;
         let f_handle = (*handle).f_handle.as_ptr() as *const libc::c_uchar;
         let ptr = f_handle.add((*handle).handle_bytes as usize) as *const libc::c_char;
         let c_str = ffi::CStr::from_ptr(ptr);
@@ -63,7 +58,8 @@ fn get_name(fid: &libc::fanotify_event_info_fid) -> OsString {
     }
 }
 
-fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
+fn read(buffer: &[u8], ptr: usize, filter: &watchpath::Filter, out: &mut Vec<Event>)
+-> Result<usize, Error> {
     macro_rules! read_buffer {
         ($buffer: expr, $ptr: expr, $typ: ty) => {{
             let slice: &[u8; size_of::<$typ>()] = $buffer[$ptr..$ptr + size_of::<$typ>()]
@@ -80,15 +76,13 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
     let next_event = ptr + metadata.event_len as usize;
     let mut ptr = n_ptr;
 
-    return ((|| {
-
     let mut fid = None;
     let mut dfid = None;
     let mut new_dfid = None;
     let mut old_dfid = None;
     
     while ptr < next_event {
-        let (header, _) = read_buffer!(&buffer, ptr, libc::fanotify_event_info_header);
+        let (header, _) = read_buffer!(buffer, ptr, libc::fanotify_event_info_header);
         match header.info_type {
             libc::FAN_EVENT_INFO_TYPE_DFID_NAME => dfid
                 = Some(read_buffer!(buffer, ptr, libc::fanotify_event_info_fid).0),
@@ -100,8 +94,9 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
                 = Some(read_buffer!(buffer, ptr, libc::fanotify_event_info_fid).0),
 
             libc::FAN_EVENT_INFO_TYPE_ERROR => {
-                let msg = read_buffer!(buffer, ptr, libc::fanotify_event_info_error).0;
-                return Err(Error::Internal(msg.error))
+                return Err(Error::Internal(
+                    read_buffer!(buffer, ptr, libc::fanotify_event_info_error).0.error
+                ));
             }
 
             libc::FAN_EVENT_INFO_TYPE_DFID
@@ -112,50 +107,49 @@ fn read(buffer: &[u8], ptr: usize) -> (Result<Vec<Event>, Error>, usize) {
     }
 
     let Some(fid) = fid else {return Err(Error::BadData)};
+    let fh = get_handle(fid);
 
-    let mut events = vec![];
+    if !filter.apply(&fh) {return Ok(next_event)}
 
-    // TODO: Identify objects via file handle instead of inodes
-
-    if metadata.mask & (libc::FAN_CREATE | libc::FAN_DELETE) != 0 {
+    if metadata.mask & libc::FAN_CREATE != 0 {
         let Some(dfid) = dfid else {return Err(Error::BadData)};
 
-        if metadata.mask & libc::FAN_CREATE != 0 {
-            events.push(Event::Create {
-                p_fh: get_handle(dfid),
-                fh: get_handle(fid),
-                name: get_name(dfid)
-            });
-        }
-        if metadata.mask & libc::FAN_DELETE != 0 {
-            events.push(Event::Delete {
-                p_fh: get_handle(dfid),
-                fh: get_handle(fid),
-                name: get_name(dfid)
-            });
-        }
+        out.push(Event::Create {
+            p_fh: get_handle(dfid),
+            fh: fh.clone(),
+            name: get_name(dfid)
+        });
+    }
+
+    if metadata.mask & libc::FAN_DELETE != 0 {
+        let Some(dfid) = dfid else {return Err(Error::BadData)};
+
+        out.push(Event::Delete {
+            p_fh: get_handle(dfid),
+            fh: fh.clone(),
+            name: get_name(dfid)
+        });
     }
 
     if metadata.mask & libc::FAN_RENAME != 0 {
         let Some(old_dfid) = old_dfid else {return Err(Error::BadData)};
         let Some(new_dfid) = new_dfid else {return Err(Error::BadData)};
 
-        events.push(Event::Move {
+        out.push(Event::Move {
             old_p_fh: get_handle(old_dfid),
             new_p_fh: get_handle(new_dfid),
-            fh: get_handle(fid),
+            fh: fh.clone(),
             old_name: get_name(old_dfid),
             new_name: get_name(new_dfid)
         });
     }
 
-    Ok(events)
-
-    })(), next_event)
+    Ok(next_event)
 }
 
-pub fn watch<F>(path: &path::Path, callback: &mut F) -> Result<(), Error>
-where F: FnMut(Result<Vec<Event>, Error>) -> ops::ControlFlow<()> {
+pub fn watch<F>(path: &path::Path, filter: &watchpath::Filter, callback: &mut F)
+-> Result<(), Error>
+where F: FnMut(&Vec<Event>) -> ops::ControlFlow<()> {
 
     let fd = unsafe {libc::fanotify_init(
         libc::FAN_CLASS_NOTIF
@@ -192,17 +186,26 @@ where F: FnMut(Result<Vec<Event>, Error>) -> ops::ControlFlow<()> {
 
     let mut buffer = [0; 4096];
 
+    let mut events = vec![];
+
     loop {
         let read_len = file.read(&mut buffer).expect("Failed to read");
         let mut ptr = 0;
-        while ptr < read_len {
-            let (events, n_ptr) = read(&buffer, ptr);
-            ptr = n_ptr;
 
-            match callback(events) {
-                ops::ControlFlow::Continue(_) => continue,
-                ops::ControlFlow::Break(_) => break
-            };
+        while ptr < read_len {
+            ptr = read(&buffer, ptr, filter, &mut events)?;
+        }
+
+        if events.len() == 0 {continue}
+
+        let result = callback(&events);
+        events.clear();
+
+        match result {
+            ops::ControlFlow::Continue(_) => continue,
+            ops::ControlFlow::Break(_) => break
         }
     }
+
+    Ok(())
 }

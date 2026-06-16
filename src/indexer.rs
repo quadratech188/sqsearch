@@ -1,59 +1,8 @@
-use std::{ffi, io, mem, os::unix::ffi::OsStrExt, path};
+use std::path;
 
 use anyhow::Context;
 
-use crate::{db, fanotify};
-
-unsafe extern "C" {
-    fn name_to_handle_at(
-        dirfd: libc::c_int,
-        pathname: *const libc::c_char,
-        handle: *mut fanotify::file_handle,
-        mount_id: *mut libc::c_int,
-        flags: libc::c_int
-    ) -> libc::c_int;
-}
-
-fn get_fh(path: &path::Path) -> Result<(libc::c_int, Vec<u8>), io::Error> {
-    let pathname = ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-
-    let mut fh = fanotify::file_handle {
-        handle_bytes: 0,
-        handle_type: 0,
-        f_handle: []
-    };
-
-    let mut mount_id = mem::MaybeUninit::uninit();
-
-    let ret = unsafe {name_to_handle_at(
-        libc::AT_FDCWD,
-        pathname.as_ptr(),
-        &mut fh,
-        mount_id.as_mut_ptr(),
-        0
-    )};
-
-    let last_err = io::Error::last_os_error();
-
-    if ret < 0 && last_err.raw_os_error() != Some(libc::EOVERFLOW) {
-        return Err(last_err)
-    }
-    let fhsize = size_of::<fanotify::file_handle>() + fh.handle_bytes as usize;
-    let mut buf = vec![0 as u8; fhsize];
-    let fh_ptr = buf.as_mut_ptr() as *mut fanotify::file_handle;
-    unsafe {(*fh_ptr).handle_bytes = fhsize as u32};
-
-    let ret = unsafe {name_to_handle_at(
-        libc::AT_FDCWD,
-        pathname.as_ptr(),
-        buf.as_mut_ptr() as *mut fanotify::file_handle,
-        mount_id.as_mut_ptr(),
-        0
-    )};
-    if ret < 0 {return Err(io::Error::last_os_error())};
-
-    Ok((unsafe {mount_id.assume_init()}, buf))
-}
+use crate::{db, util};
 
 fn index_path(tx: &mut rusqlite::Transaction, path: &path::Path) -> Result<(), anyhow::Error> {
     let Some(parent) = path.parent() else {
@@ -68,10 +17,10 @@ fn index_path(tx: &mut rusqlite::Transaction, path: &path::Path) -> Result<(), a
         ));
     };
 
-    let (_, fh) = get_fh(path)
+    let (_, fh) = util::get_fh(path)
         .with_context(|| format!("Failed to get file handle of `{}`", path.display()))?;
 
-    let (_, p_fh) = get_fh(parent)
+    let (_, p_fh) = util::get_fh(parent)
         .with_context(|| format!("Failed to get file handle of `{}`", parent.display()))?;
 
     let parent_id = db::get_single_id(&tx, &p_fh)
@@ -93,7 +42,7 @@ fn index_path(tx: &mut rusqlite::Transaction, path: &path::Path) -> Result<(), a
 pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), anyhow::Error> {
     let mut tx = conn.transaction()?;
 
-    db::ensure_root(&tx, &get_fh(path)?.1)?;
+    db::ensure_root(&tx, &util::get_fh(path)?.1)?;
 
     for (i, entry) in walkdir::WalkDir::new(path).into_iter().enumerate() {
         let Ok(entry) = entry else {continue};
