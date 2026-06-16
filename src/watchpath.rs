@@ -1,6 +1,6 @@
 use std::{mem, path};
 
-use crate::util;
+use crate::{file_handle::FileHandle, util};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct WatchPathArgs {
@@ -20,6 +20,18 @@ pub enum Filter {
     }
 }
 
+
+impl Filter {
+    pub fn apply(&self, handle: &FileHandle) -> bool {
+        match self {
+            Filter::None => true,
+            Filter::Subvol { root_objectid } => {
+                get_root_objectid(handle) == *root_objectid
+            }
+        }
+    }
+}
+
 // https://codebrowser.dev/linux/linux/fs/btrfs/export.h.html
 #[allow(nonstandard_style)]
 
@@ -32,27 +44,13 @@ struct btrfs_fid_header {
 
 #[warn(nonstandard_style)]
 
-impl Filter {
-    pub fn apply(&self, handle: &[u8]) -> bool {
-        match self {
-            Filter::None => true,
-            Filter::Subvol { root_objectid } => {
-                get_root_objectid(handle) == *root_objectid
-            }
-        }
-    }
-}
-
-fn get_root_objectid(handle: &[u8]) -> u64 {
-    let f_handle = util::get_f_handle(handle);
-
-    let slice: [u8; size_of::<btrfs_fid_header>()] = f_handle[..size_of::<btrfs_fid_header>()]
-        .try_into()
-        .expect("File handle does not match expected layout!");
+fn get_root_objectid(handle: &FileHandle) -> u64 {
+    let slice: [u8; size_of::<btrfs_fid_header>()] =
+        handle.f_handle[..size_of::<btrfs_fid_header>()]
+        .try_into().unwrap();
 
     let fid: btrfs_fid_header = unsafe {mem::transmute(slice)};
 
-    dbg!(fid.root_objectid);
     fid.root_objectid
 }
 
@@ -64,6 +62,8 @@ pub fn prepare_fanotify(args: &WatchPathArgs)
 
     let (_, child_fh) = util::get_fh(&args.path)?;
     let (_, _root_fh) = util::get_fh(&btrfs_root)?;
+
+    // TODO: Reimplement fsid checking
 
     /*
     if get_root_objectid(&child_fh) != get_root_objectid(&root_fh) {

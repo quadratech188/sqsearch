@@ -1,6 +1,6 @@
 use std::{ffi::OsStr, ops, path, sync::mpsc, thread, time};
 
-use crate::{GlobalArgs, db, fanotify, watchpath};
+use crate::{GlobalArgs, db, fanotify, file_handle::FileHandle, watchpath};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct WatchArgs {
@@ -16,7 +16,7 @@ pub enum Error {
     DB(#[from] db::Error)
 }
 
-fn get_parent_id(tx: &rusqlite::Transaction, p_fh: &[u8], name: &OsStr)
+fn get_parent_id(tx: &rusqlite::Transaction, p_fh: &FileHandle, name: &OsStr)
 -> Result<i64, Error> {
         let id = db::get_single_id(&tx, p_fh);
         if let Err(db::Error::NoFile) = id {
@@ -25,7 +25,7 @@ fn get_parent_id(tx: &rusqlite::Transaction, p_fh: &[u8], name: &OsStr)
         Ok(id?)
 }
 
-fn handle_create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &OsStr)
+fn handle_create(tx: &rusqlite::Transaction, p_fh: &FileHandle, fh: &FileHandle, name: &OsStr)
 -> Result<(), Error> {
     let parent_id = get_parent_id(tx, p_fh, name)?;
 
@@ -45,7 +45,7 @@ fn handle_create(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &OsSt
     Ok(())
 }
 
-fn handle_delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &OsStr)
+fn handle_delete(tx: &rusqlite::Transaction, p_fh: &FileHandle, fh: &FileHandle, name: &OsStr)
 -> Result<(), Error> {
     let parent_id = get_parent_id(tx, p_fh, name)?;
 
@@ -67,7 +67,7 @@ fn handle_delete(tx: &rusqlite::Transaction, p_fh: &[u8], fh: &[u8], name: &OsSt
 
 fn handle_move(
     tx: &rusqlite::Transaction,
-    old_p_fh: &[u8], new_p_fh: &[u8], fh: &[u8], old_name: &OsStr, new_name: &OsStr
+    old_p_fh: &FileHandle, new_p_fh: &FileHandle, fh: &FileHandle, old_name: &OsStr, new_name: &OsStr
 ) -> Result<(), Error> {
     let old_parent_id = get_parent_id(tx, old_p_fh, old_name)?;
     let new_parent_id = get_parent_id(tx, new_p_fh, new_name)?;

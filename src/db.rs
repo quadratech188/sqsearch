@@ -1,5 +1,7 @@
 use std::{ffi::{OsStr, OsString}, os::unix::ffi::OsStrExt, path};
 
+use crate::file_handle::FileHandle;
+
 const ROOT_ID: i64 = 1;
 
 #[derive(thiserror::Error, Debug)]
@@ -60,7 +62,7 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn ensure_root(tx: &rusqlite::Transaction, fh: &[u8]) -> Result<(), Error> {
+pub fn ensure_root(tx: &rusqlite::Transaction, fh: &FileHandle) -> Result<(), Error> {
     match get_single_id(tx, fh) {
         Ok(ROOT_ID) => {
             Ok(())
@@ -87,7 +89,7 @@ fn transform_query_one_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error>
     }
 }
 
-pub fn get_single_id(tx: &rusqlite::Transaction, fh: &[u8]) -> Result<i64, Error> {
+pub fn get_single_id(tx: &rusqlite::Transaction, fh: &FileHandle) -> Result<i64, Error> {
     let mut stmt = tx.prepare_cached("
         SELECT id FROM files WHERE file_handle = ?1
     ")?;
@@ -104,7 +106,7 @@ pub fn get_rough_id(tx: &rusqlite::Transaction, parent_id: i64, name: &OsStr)
     transform_query_one_err(stmt.query_one((name.as_bytes(), parent_id), |x| x.get(0)))
 }
 
-pub fn get_id(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &OsStr)
+pub fn get_id(tx: &rusqlite::Transaction, parent_id: i64, fh: &FileHandle, name: &OsStr)
 -> Result<i64, Error> {
     let mut stmt = tx.prepare_cached("
         SELECT id FROM files WHERE file_handle = ?1 AND name = ?2 AND parent_id = ?3
@@ -137,7 +139,7 @@ fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &O
     Ok(())
 }
 
-pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &[u8], name: &OsStr)
+pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &FileHandle, name: &OsStr)
 -> Result<i64, Error> {
     let mut stmt = tx.prepare_cached("
         INSERT INTO files (file_handle, parent_id, name) VALUES(?1, ?2, ?3)

@@ -9,6 +9,7 @@ mod watcher;
 mod queryer;
 mod watchpath;
 mod util;
+mod file_handle;
 
 #[derive(clap::Parser, Debug)]
 struct CLI {

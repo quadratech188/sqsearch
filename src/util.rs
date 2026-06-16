@@ -1,5 +1,6 @@
-use core::slice;
 use std::{ffi, io, mem, os::unix::ffi::OsStrExt, path};
+
+use crate::file_handle::FileHandle;
 
 #[repr(C)]
 pub struct file_handle {
@@ -18,19 +19,7 @@ unsafe extern "C" {
     ) -> libc::c_int;
 }
 
-pub fn get_f_handle(fh: &[u8]) -> &[u8] {
-    let handle = fh.as_ptr() as *const file_handle;
-    let len = unsafe {(*handle).handle_bytes as usize};
-    let ptr = unsafe {(*handle).f_handle.as_ptr() as *const u8};
-
-    if size_of::<file_handle>() + len != fh.len() {
-        panic!("Invalid file handle!")
-    }
-    
-    unsafe {slice::from_raw_parts(ptr, len)}
-}
-
-pub fn get_fh(path: &path::Path) -> Result<(libc::c_int, Vec<u8>), io::Error> {
+pub fn get_fh(path: &path::Path) -> Result<(libc::c_int, FileHandle), io::Error> {
     let pathname = ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
 
     let mut fh = file_handle {
@@ -68,5 +57,8 @@ pub fn get_fh(path: &path::Path) -> Result<(libc::c_int, Vec<u8>), io::Error> {
     )};
     if ret < 0 {return Err(io::Error::last_os_error())};
 
-    Ok((unsafe {mount_id.assume_init()}, buf))
+    Ok((
+        unsafe {mount_id.assume_init()},
+        FileHandle::from_kernel(&buf).expect("Malformed file handle!")
+    ))
 }

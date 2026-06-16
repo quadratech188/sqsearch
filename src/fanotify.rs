@@ -3,7 +3,7 @@ use std::{ffi::{self, OsString}, fs, io::{self, Read}, mem, ops, os::{fd::FromRa
 
 use libc;
 
-use crate::{util, watchpath};
+use crate::{file_handle::FileHandle, util, watchpath};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -20,31 +20,31 @@ pub enum Error {
 #[derive(Debug, Clone)]
 pub enum Event {
     Create {
-        p_fh: Vec<u8>,
-        fh: Vec<u8>,
+        p_fh: FileHandle,
+        fh: FileHandle,
         name: OsString
     },
     Delete {
-        p_fh: Vec<u8>,
-        fh: Vec<u8>,
+        p_fh: FileHandle,
+        fh: FileHandle,
         name: OsString
     },
     Move {
-        old_p_fh: Vec<u8>,
-        new_p_fh: Vec<u8>,
-        fh: Vec<u8>,
+        old_p_fh: FileHandle,
+        new_p_fh: FileHandle,
+        fh: FileHandle,
         old_name: OsString,
         new_name: OsString,
     }
 }
 
-fn get_handle(fid: &libc::fanotify_event_info_fid) -> Vec<u8> {
+fn get_handle(fid: &libc::fanotify_event_info_fid) -> FileHandle {
     let handle = fid.handle.as_ptr() as *const util::file_handle;
     let begin = handle as *const u8;
     let size = size_of::<util::file_handle>() + unsafe {(*handle).handle_bytes} as usize;
-    let data_slice = unsafe {slice::from_raw_parts(begin, size / size_of::<u8>())};
 
-    data_slice.into()
+    FileHandle::from_kernel(unsafe {slice::from_raw_parts(begin, size)})
+        .expect("Malformed file handle!")
 }
 
 fn get_name(fid: &libc::fanotify_event_info_fid) -> OsString {
