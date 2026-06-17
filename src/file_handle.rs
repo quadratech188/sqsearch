@@ -35,12 +35,11 @@ impl FileHandle {
 
 impl rusqlite::types::ToSql for FileHandle {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let mut buf = vec![0 as u8; 8 + self.f_handle.len()];
+        let mut buf = vec![0 as u8; 4 + self.f_handle.len()];
 
         // SQLite uses big-endian
-        buf[..4].copy_from_slice(&(self.f_handle.len() as u32).to_be_bytes());
-        buf[4..8].copy_from_slice(&(self.handle_type as i32).to_be_bytes());
-        buf[8..].copy_from_slice(&self.f_handle);
+        buf[..4].copy_from_slice(&(self.handle_type as i32).to_be_bytes());
+        buf[4..].copy_from_slice(&self.f_handle);
 
         Ok(rusqlite::types::ToSqlOutput::from(buf))
     }
@@ -49,24 +48,15 @@ impl rusqlite::types::ToSql for FileHandle {
 impl rusqlite::types::FromSql for FileHandle {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
         let buf = value.as_blob()?;
-        if buf.len() < 8 {
+        if buf.len() < 4 {
             return Err(rusqlite::types::FromSqlError::InvalidBlobSize {
-                expected_size: 8, blob_size: buf.len()
-            })
-        }
-
-        let len = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
-        let handle_type = i32::from_be_bytes(buf[..4].try_into().unwrap());
-
-        if buf.len() != 8 + len {
-            return Err(rusqlite::types::FromSqlError::InvalidBlobSize {
-                expected_size: 8 + len, blob_size: buf.len()
+                expected_size: 4, blob_size: buf.len()
             })
         }
 
         Ok(FileHandle {
-            handle_type,
-            f_handle: buf[8..].to_vec()
+            handle_type: i32::from_be_bytes(buf[..4].try_into().unwrap()),
+            f_handle: buf[4..].to_vec()
         })
     }
 }
