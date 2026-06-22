@@ -3,7 +3,7 @@ use std::path;
 use clap::Parser;
 
 mod db;
-mod fanotify;
+mod fanotify_reader;
 mod indexer;
 mod watcher;
 mod queryer;
