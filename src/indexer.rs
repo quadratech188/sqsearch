@@ -23,8 +23,6 @@ fn index_path(tx: &mut rusqlite::Transaction, path: &path::Path) -> Result<(), a
     let (_, p_fh) = util::get_fh(parent)
         .with_context(|| format!("Failed to get file handle of `{}`", parent.display()))?;
 
-    dbg!(&fh);
-
     let parent_id = db::get_single_id(&tx, &p_fh)
         .with_context(|| format!("Failed to get database ID of `{}`", parent.display()))?;
 

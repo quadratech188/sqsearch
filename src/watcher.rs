@@ -116,7 +116,6 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &[Event])
     let tx = db::map_db_err(conn.transaction())?;
 
     for event in events {
-        dbg!(event);
         match event {
             Event::Create {p_fh, fh, name} => {
                 handle_create(&tx, p_fh, fh, name)
