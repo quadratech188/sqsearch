@@ -30,6 +30,9 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "normal")?;
+    conn.pragma_update(None, "busy_timeout", -2000)?;
+    conn.pragma_update(None, "cache_size", -64 * 1024)?;
+    conn.pragma_update(None, "mmap_size", 1024 * 1024 * 1024)?;
 
     // The files table needs to store every file/dir regardless of encoding, as we'll need to index
     // its subdirs, so we encode filenames as BLOB
