@@ -1,6 +1,6 @@
-use std::{ffi::{self, OsStr}, fs, io::{self, Read}, ptr};
+use std::{ffi::{self, OsStr}, fs, io::{self, Read}};
 
-use crate::{file_handle::FileHandle, util};
+use crate::{file_handle::{FileHan, FileHandleOps}, util};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -37,18 +37,11 @@ pub struct Reader {
     buf: [u8; 4096]
 }
 
-fn read_as_type<T>(buf: &[u8]) -> Result<T, Error> {
-    if size_of::<T>() > buf.len() {
-        return Err(Error::Logic)
-    }
-    Ok(unsafe {ptr::read_unaligned(buf.as_ptr() as *const T)})
-}
-
 impl<'a> Event<'a> {
     fn from_slice(buf: &'a [u8]) -> Result<(Self, usize), Error> {
         let mut ptr = 0;
 
-        let metadata = read_as_type::<libc::fanotify_event_metadata>(&buf[ptr..])?;
+        let metadata = util::read_as_type::<libc::fanotify_event_metadata>(&buf[ptr..]);
         let event_len = ptr + metadata.event_len as usize;
         let mask = metadata.mask;
 
@@ -61,7 +54,7 @@ impl<'a> Event<'a> {
         let mut new_dfid = None;
 
         while ptr < event_len {
-            let header = read_as_type::<libc::fanotify_event_info_header>(&buf[ptr..])?;
+            let header = util::read_as_type::<libc::fanotify_event_info_header>(&buf[ptr..]);
             match header.info_type {
                 libc::FAN_EVENT_INFO_TYPE_FID => fid = Some(ptr),
                 libc::FAN_EVENT_INFO_TYPE_DFID_NAME => dfid = Some(ptr),
@@ -123,46 +116,34 @@ impl<'a> Event<'a> {
     }
 }
 
-fn get_fh<'a>(buf: &'a [u8]) -> Result<FileHandle, Error> {
-    let begin = size_of::<libc::fanotify_event_info_fid>();
-    let ptr = unsafe {(buf.as_ptr() as *const u8)
-        .add(begin)};
-
-    let handle_bytes = unsafe {ptr::read_unaligned(ptr as *const u32)} as usize;
-    let len = size_of::<util::file_handle>() + handle_bytes;
-
-    if buf.len() < len {return Err(Error::Logic)}
-    Ok(FileHandle::from_kernel(&buf[begin..begin + len]).unwrap())
+fn get_fh<'a>(buf: &[u8]) -> &FileHan {
+    let buf_after_fid = &buf[size_of::<libc::fanotify_event_info_fid>()..];
+    FileHan::read_from_buf(buf_after_fid)
+        .expect("Invalid file handle!")
 }
 
-fn get_name<'a>(buf: &'a [u8]) -> Result<&'a OsStr, Error> {
-    let ptr = unsafe {(buf.as_ptr() as *const u8)
-        .add(size_of::<libc::fanotify_event_info_fid>())};
+fn get_name<'a>(buf: &[u8]) -> &OsStr {
+    let name_start = size_of::<libc::fanotify_event_info_fid>() + get_fh(buf).size();
 
-    let handle_bytes = unsafe {ptr::read_unaligned(ptr as *const u32)} as usize;
-
-    // FIXME: Make sure CStr doesn't overflow
-
-    let offset = size_of::<util::file_handle>() + handle_bytes as usize;
-    let c_str = unsafe {ffi::CStr::from_ptr((ptr as *const i8).add(offset))};
-
-    Ok(unsafe {OsStr::from_encoded_bytes_unchecked(c_str.to_bytes())})
+    let c_str = ffi::CStr::from_bytes_until_nul(&buf[name_start..])
+        .expect("Failed to parse filename from fanotify stream");
+    unsafe {OsStr::from_encoded_bytes_unchecked(c_str.to_bytes())}
 }
 
 impl<'a> Event<'a> {
-    pub fn fh(&self) -> Result<FileHandle, Error> {get_fh(&self.buf[self.fid..])}
+    pub fn fh(&self) -> &FileHan {get_fh(&self.buf[self.fid..])}
 }
 
 impl<'a> Create<'a> {
-    pub fn p_fh(&self) -> Result<FileHandle, Error> {get_fh(&self.buf[self.dfid..])}
-    pub fn name(&self) -> Result<&'a OsStr, Error> {get_name(&self.buf[self.dfid..])}
+    pub fn p_fh(&self) -> &FileHan {get_fh(&self.buf[self.dfid..])}
+    pub fn name(&self) -> &OsStr   {get_name(&self.buf[self.dfid..])}
 }
 
 impl<'a> Move<'a> {
-    pub fn old_p_fh(&self) -> Result<FileHandle, Error> {get_fh(&self.buf[self.old_dfid..])}
-    pub fn old_name(&self) -> Result<&'a OsStr, Error> {get_name(&self.buf[self.old_dfid..])}
-    pub fn new_p_fh(&self) -> Result<FileHandle, Error> {get_fh(&self.buf[self.new_dfid..])}
-    pub fn new_name(&self) -> Result<&'a OsStr, Error> {get_name(&self.buf[self.new_dfid..])}
+    pub fn old_p_fh(&self) -> &FileHan {get_fh(&self.buf[self.old_dfid..])}
+    pub fn old_name(&self) -> &OsStr   {get_name(&self.buf[self.old_dfid..])}
+    pub fn new_p_fh(&self) -> &FileHan {get_fh(&self.buf[self.new_dfid..])}
+    pub fn new_name(&self) -> &OsStr   {get_name(&self.buf[self.new_dfid..])}
 }
 
 impl Reader {

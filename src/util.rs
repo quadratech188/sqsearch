@@ -1,6 +1,13 @@
-use std::{ffi, io, mem, os::unix::ffi::OsStrExt, path};
+use std::{ffi, io, mem, os::unix::ffi::OsStrExt, path, ptr};
 
-use crate::file_handle::FileHandle;
+pub fn read_as_type<T>(buf: &[u8]) -> T {
+    if size_of::<T>() > buf.len() {
+        panic!("Fanotify stream ended early");
+    }
+    unsafe {ptr::read_unaligned(buf.as_ptr() as *const T)}
+}
+
+use crate::file_handle::{FileHan, FileHandle};
 
 #[repr(C)]
 pub struct file_handle {
@@ -59,6 +66,7 @@ pub fn get_fh(path: &path::Path) -> Result<(libc::c_int, FileHandle), io::Error>
 
     Ok((
         unsafe {mount_id.assume_init()},
-        FileHandle::from_kernel(&buf).expect("Malformed file handle!")
+        FileHan::read_from_buf(&buf)
+            .expect("Invali file handle!").to_owned()
     ))
 }

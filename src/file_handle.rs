@@ -1,62 +1,86 @@
-use std::slice;
+use std::{borrow::Borrow, ops::Deref};
+
 
 use crate::util;
 
-#[derive(Clone, Debug)]
-pub struct FileHandle {
-    pub handle_type: libc::c_int,
-    pub f_handle: Vec<libc::c_uchar>
-}
+#[derive(Debug)]
+pub struct FileHandleInvalidError;
 
-impl FileHandle {
-    pub fn from_kernel(buf: &[u8]) -> Option<FileHandle> {
-        if buf.len() < size_of::<util::file_handle>() {
-            return None
+// FileHan is to FileHandle what str to String
+#[repr(transparent)]
+pub struct FileHan([u8]);
+
+impl FileHan {
+    pub fn read_from_buf(buf: &[u8]) -> Result<&Self, FileHandleInvalidError> {
+        let header: util::file_handle = util::read_as_type(buf);
+        let total_len = size_of::<util::file_handle>() + header.handle_bytes as usize;
+
+        if total_len > buf.len() {
+            return Err(FileHandleInvalidError)
         }
 
-        let ptr = buf.as_ptr() as *const util::file_handle;
+        Ok(unsafe {Self::unchecked(&buf[..total_len])})
+    }
 
-        let handle_bytes = unsafe {(*ptr).handle_bytes} as usize;
-
-        if buf.len() != size_of::<util::file_handle>() + handle_bytes {
-            return None
-        }
-
-        let f_handle = unsafe {slice::from_raw_parts(
-            (*ptr).f_handle.as_ptr(), handle_bytes
-        )}.to_vec();
-
-        Some(FileHandle {
-            handle_type: unsafe {(*ptr).handle_type},
-            f_handle
-        })
+    pub unsafe fn unchecked(buf: &[u8]) -> &Self {
+        unsafe {&*(buf as *const [u8] as *const FileHan)}
     }
 }
 
-impl rusqlite::types::ToSql for FileHandle {
+#[derive(Clone, Debug)]
+pub struct FileHandle(Vec<u8>);
+
+impl FileHandle {
+    pub fn new(handle: &FileHan) -> Self {
+        Self(handle.buf().to_vec())
+    }
+}
+
+impl Borrow<FileHan> for FileHandle {
+    fn borrow(&self) -> &FileHan {
+        unsafe {FileHan::unchecked(&self.0)}
+    }
+}
+impl ToOwned for FileHan {
+    type Owned = FileHandle;
+
+    fn to_owned(&self) -> Self::Owned {
+        FileHandle::new(self)
+    }
+}
+impl Deref for FileHandle {
+    type Target = FileHan;
+    fn deref(&self) -> &Self::Target {
+        unsafe {FileHan::unchecked(&self.0)}
+    }
+}
+
+impl FileHandleOps for FileHan    {fn buf(&self) -> &[u8] {&self.0}}
+impl FileHandleOps for FileHandle {fn buf(&self) -> &[u8] {&self.0}}
+
+pub trait FileHandleOps {
+    fn buf(&self) -> &[u8];
+
+    fn f_handle(&self) -> &[u8] {
+        &self.buf()[size_of::<util::file_handle>()..]
+    }
+
+    fn size(&self) -> usize {
+        let header: util::file_handle = util::read_as_type(self.buf());
+        size_of::<util::file_handle>() + header.handle_bytes as usize
+    }
+}
+
+impl rusqlite::types::ToSql for FileHan {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let mut buf = vec![0 as u8; 4 + self.f_handle.len()];
-
-        // SQLite uses big-endian
-        buf[..4].copy_from_slice(&(self.handle_type as i32).to_be_bytes());
-        buf[4..].copy_from_slice(&self.f_handle);
-
-        Ok(rusqlite::types::ToSqlOutput::from(buf))
+        Ok(rusqlite::types::ToSqlOutput::from(self.buf()))
     }
 }
 
 impl rusqlite::types::FromSql for FileHandle {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        let buf = value.as_blob()?;
-        if buf.len() < 4 {
-            return Err(rusqlite::types::FromSqlError::InvalidBlobSize {
-                expected_size: 4, blob_size: buf.len()
-            })
-        }
-
-        Ok(FileHandle {
-            handle_type: i32::from_be_bytes(buf[..4].try_into().unwrap()),
-            f_handle: buf[4..].to_vec()
-        })
+        FileHan::read_from_buf(value.as_blob()?)
+            .map(|x| x.to_owned())
+            .map_err(|_| rusqlite::types::FromSqlError::InvalidType)
     }
 }

@@ -1,6 +1,6 @@
-use std::{mem, path};
+use std::path;
 
-use crate::{file_handle::FileHandle, util};
+use crate::{file_handle::{FileHan, FileHandleOps}, util};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct WatchPathArgs {
@@ -22,7 +22,7 @@ pub enum Filter {
 
 
 impl Filter {
-    pub fn apply(&self, handle: &FileHandle) -> bool {
+    pub fn apply(&self, handle: &FileHan) -> bool {
         match self {
             Filter::None => true,
             Filter::Subvol { root_objectid } => {
@@ -44,13 +44,8 @@ struct btrfs_fid_header {
 
 #[warn(nonstandard_style)]
 
-fn get_root_objectid(handle: &FileHandle) -> u64 {
-    let slice: [u8; size_of::<btrfs_fid_header>()] =
-        handle.f_handle[..size_of::<btrfs_fid_header>()]
-        .try_into().unwrap();
-
-    let fid: btrfs_fid_header = unsafe {mem::transmute(slice)};
-
+fn get_root_objectid(handle: &FileHan) -> u64 {
+    let fid: btrfs_fid_header = util::read_as_type(handle.f_handle());
     fid.root_objectid
 }
 

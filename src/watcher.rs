@@ -182,31 +182,31 @@ fn fanotify_thread(
         events.clear();
 
         if let Err(e) = reader.map_events(&mut |x| {
-            if !filter.apply(&x.fh()?) {return Ok(())}
+            if !filter.apply(x.fh()) {return Ok(())}
 
             if let Some(e) = x.as_create()? {
                 events.push(Event::Create {
-                    p_fh: e.p_fh()?,
-                    fh: x.fh()?,
-                    name: e.name()?.to_os_string()
+                    p_fh: e.p_fh().to_owned(),
+                    fh: x.fh().to_owned(),
+                    name: e.name().to_os_string()
                 });
             }
 
             if let Some(e) = x.as_delete()? {
                 events.push(Event::Delete {
-                    p_fh: e.p_fh()?,
-                    fh: x.fh()?,
-                    name: e.name()?.to_os_string()
+                    p_fh: e.p_fh().to_owned(),
+                    fh: x.fh().to_owned(),
+                    name: e.name().to_os_string()
                 });
             }
 
             if let Some(e) = x.as_move()? {
                 events.push(Event::Move {
-                    old_p_fh: e.old_p_fh()?,
-                    new_p_fh: e.new_p_fh()?,
-                    fh: x.fh()?,
-                    old_name: e.old_name()?.to_os_string(),
-                    new_name: e.new_name()?.to_os_string()
+                    old_p_fh: e.old_p_fh().to_owned(),
+                    new_p_fh: e.new_p_fh().to_owned(),
+                    fh: x.fh().to_owned(),
+                    old_name: e.old_name().to_os_string(),
+                    new_name: e.new_name().to_os_string()
                 });
             }
 
