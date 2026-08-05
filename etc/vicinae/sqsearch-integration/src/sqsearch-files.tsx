@@ -268,6 +268,7 @@ function FilePanel({path, select, more_results}: FilePanelProps) {
 		title={path}
 		subtitle={filename}
 		icon={get_icon(path)}
+		dragContent={{file: path}}
 		actions={
 			<ActionPanel>
 				<ActionPanel.Section>
