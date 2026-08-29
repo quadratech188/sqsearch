@@ -53,7 +53,6 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
         CREATE INDEX IF NOT EXISTS fanotify_lookup_idx ON files (file_handle, name);
 
         CREATE TABLE IF NOT EXISTS suffix_array (
-            parent_id INTEGER,
             suffix TEXT COLLATE NOCASE,
             id INTEGER,
             PRIMARY KEY (suffix, id)
@@ -128,16 +127,16 @@ fn get_name(tx: &rusqlite::Transaction, id: i64) -> Result<OsString, Error> {
     )})
 }
 
-fn create_suffixes(tx: &rusqlite::Transaction, parent_id: i64, id: i64, name: &OsStr)
+fn create_suffixes(tx: &rusqlite::Transaction, id: i64, name: &OsStr)
 -> Result<(), Error> {
     // Return early for invalid UTF-8
     let Some(name) = name.to_str() else {return Ok(())};
 
     let mut stmt = tx.prepare_cached("
-        INSERT INTO suffix_array (parent_id, id, suffix) VALUES(?1, ?2, ?3)
+        INSERT INTO suffix_array (suffix, id) VALUES(?1, ?2)
     ")?;
     for (i, _) in name.char_indices() {
-        stmt.execute((parent_id, id, &name[i..]))?;
+        stmt.execute((&name[i..], id))?;
     }
     Ok(())
 }
@@ -156,7 +155,7 @@ pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &FileHan, name: &O
         Err(e) => Err(e.into())
     }?;
 
-    create_suffixes(tx, parent_id, id, name)?;
+    create_suffixes(tx, id, name)?;
     Ok(id)
 }
 
@@ -204,10 +203,10 @@ pub fn r#move(
         Err(x) => Err(x.into())
     }?;
 
-    // TODO: Reuse suffixes if old name == new name
+    if old_name == new_name {return Ok(())}
 
     delete_suffixes(tx, id, &old_name)?;
-    create_suffixes(tx, new_parent_id, id, new_name)
+    create_suffixes(tx, id, new_name)
 }
 
 pub fn get_path(tx: &rusqlite::Connection, id: i64)
@@ -269,10 +268,13 @@ pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> 
     let mut params = vec![];
     let mut conditions = vec![];
 
-    joins.push(format!("suffix_array AS s{best_index}"));
+    joins.push("suffix_array".to_string());
     params.push(segments[best_index].to_string());
     params.push(format!("{}\u{10FFFF}", segments[best_index]));
-    conditions.push(format!("s{best_index}.suffix >= ? AND s{best_index}.suffix < ?"));
+    conditions.push(format!("suffix_array.suffix >= ? AND suffix_array.suffix < ?"));
+
+    joins.push(format!("files AS s{best_index}"));
+    conditions.push(format!("s{best_index}.id = suffix_array.id"));
 
     let mut l = best_index;
     let mut r = best_index;
