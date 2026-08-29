@@ -154,9 +154,15 @@ export default function SQSearch() {
 		result_ref.current.dirty = false
 	}
 	useEffect(() => {
-		const interval = setInterval(sync, 16)
-		return () => {clearInterval(interval)}
-	}, [])
+		let interval: NodeJS.Timeout | undefined = undefined
+		const timeout = setTimeout(() => {
+			interval = setInterval(sync, 33)
+		}, 100)
+		return () => {
+			clearTimeout(timeout)
+			if (interval) clearInterval(interval)
+		}
+	}, [search_text])
 
 	const query_ref = useRef('')
 	const active_query_ref = useRef('')
