@@ -209,19 +209,21 @@ pub fn r#move(
     create_suffixes(tx, id, new_name)
 }
 
-pub fn get_path(tx: &rusqlite::Connection, id: i64)
+pub fn get_path(tx: &rusqlite::Connection, row: &rusqlite::Row, segment_cnt: usize)
 -> Result<path::PathBuf, Error> {
+    // row[0]: s0.id
+    // row[1 ... segment_cnt]: s0.name ... s{segment_cnt - 1}.name
+
     let mut stmt = tx.prepare_cached("
         SELECT f.name, parent_id FROM files AS f WHERE f.id = ?1
     ")?;
 
     let mut names = vec![];
-    let mut ptr = id;
+    let mut ptr = row.get(0)?;
     let mut cnt = 0;
     
     loop {
-        // More than one instance is OK
-        let (name, parent_id): (OsString, i64) = match stmt.query_row((ptr,), |x| {
+        let (name, parent_id): (OsString, i64) = match stmt.query_one((ptr,), |x| {
                 Ok((
                     unsafe {OsString::from_encoded_bytes_unchecked(x.get(0)?)},
                     x.get(1)?
@@ -248,6 +250,12 @@ pub fn get_path(tx: &rusqlite::Connection, id: i64)
 
     for p in names.iter().rev() {
         path.push(p);
+    }
+
+    // s0.name is already inserted
+    for i in 1..segment_cnt {
+        let s: Vec<u8> = row.get(i + 1)?;
+        path.push(unsafe {OsStr::from_encoded_bytes_unchecked(&s)});
     }
 
     Ok(path)
@@ -304,10 +312,10 @@ pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> 
         }
     }
 
-    let mut query = String::from("SELECT DISTINCT ");
+    let mut query = String::from("SELECT DISTINCT s0.id, ");
 
     query += &(0..segments.len())
-        .map(|x| format!("s{x}.id"))
+        .map(|x| format!("s{x}.name"))
         .collect::<Vec<_>>()
         .join(", ");
 

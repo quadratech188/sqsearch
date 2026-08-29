@@ -19,16 +19,7 @@ fn print_results(
     loop {
         let Some(row) = db::map_db_err(rows.next())? else {return Ok(cnt)};
 
-        let id: i64 = db::map_db_err(row.get(row_length - 1))?;
-
-        let path = match db::get_path(conn, id) {
-            Ok(x) => x,
-            Err(db::Error::IncompletePath) => {
-                println!("ERROR Failed to find path for file {id}");
-                continue
-            }
-            Err(e) => return Err(e.into())
-        };
+        let path = db::get_path(conn, row, row_length)?;
 
         println!("ITEM {}", path.display());
         cnt += 1;
