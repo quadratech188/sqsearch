@@ -1,6 +1,6 @@
-use std::{ffi::{self, OsStr, OsString}, fs, io, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, sync::mpsc, thread, time};
+use std::{ffi::{self, OsStr, OsString}, fs, io::{self, Read}, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, sync::mpsc, thread, time};
 
-use crate::{GlobalArgs, db, fanotify_reader, file_handle::FileHandle, watchpath};
+use crate::{GlobalArgs, db, fanotify, file_handle::FileHandle, watchpath};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct WatchArgs {
@@ -20,7 +20,7 @@ pub enum Event {
         fh: FileHandle,
         name: OsString
     },
-    Move {
+    Rename {
         old_p_fh: FileHandle,
         new_p_fh: FileHandle,
         fh: FileHandle,
@@ -123,7 +123,7 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &[Event])
             Event::Delete { p_fh, fh, name } => {
                 handle_delete(&tx, p_fh, fh, name)
             }
-            Event::Move { old_p_fh, new_p_fh, fh, old_name, new_name } => {
+            Event::Rename { old_p_fh, new_p_fh, fh, old_name, new_name } => {
                 handle_move(&tx, old_p_fh, new_p_fh, fh, old_name, new_name)
             }
         }?
@@ -134,10 +134,7 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &[Event])
     Ok(())
 }
 
-fn fanotify_thread(
-    path: path::PathBuf, filter: watchpath::Filter,
-    tx: mpsc::Sender<Vec<Event>>
-) -> anyhow::Result<()> {
+fn create_fanotify_stream(path: &path::Path) -> anyhow::Result<fs::File> {
     let fd = unsafe {libc::fanotify_init(
         libc::FAN_CLASS_NOTIF
         | libc::FAN_UNLIMITED_QUEUE
@@ -145,89 +142,88 @@ fn fanotify_thread(
         | libc::FAN_REPORT_NAME
         | libc::FAN_REPORT_TARGET_FID
         | libc::FAN_REPORT_DIR_FID,
+
         libc::O_LARGEFILE as u32
     )};
-    if fd < 0 {
-        return Err(
-            anyhow::anyhow!(io::Error::last_os_error())
-                .context("Failed to fanotify_init")
-        );
-    }
 
-    let result = unsafe {libc::fanotify_mark(fd,
+    if fd < 0 {anyhow::bail!(
+        "Failed to fanotify_init: {}",
+        io::Error::last_os_error().to_string()
+    )}
+
+    let err = unsafe {libc::fanotify_mark(fd,
         libc::FAN_MARK_ADD
         | libc::FAN_MARK_FILESYSTEM,
+
         libc::FAN_ONDIR
         | libc::FAN_CREATE
         | libc::FAN_DELETE
         | libc::FAN_RENAME,
+
         libc::AT_FDCWD,
+
         ffi::CString::new(path.as_os_str().as_bytes())
             .unwrap()
             .as_ptr()
     )};
-    if result < 0 {
-        return Err(
-            anyhow::anyhow!(io::Error::last_os_error())
-                .context("Failed to fanotify_mark")
-        );
-    }
 
-    let file = unsafe {fs::File::from_raw_fd(fd)};
-    let mut reader = fanotify_reader::Reader::new(file);
+    if err < 0 {anyhow::bail!(
+        "Failed to fanotify_mark: {}",
+        io::Error::last_os_error().to_string()
+    )}
 
-    let mut events = vec![];
+    Ok(unsafe {fs::File::from_raw_fd(fd)})
+}
 
+fn process_fanotify_stream(
+    mut stream: fs::File, filter: watchpath::Filter, tx: mpsc::Sender<Event>
+) -> anyhow::Result<()> {
+
+    let mut buf = [0; 4096];
+    let mut ptr = 0;
+    let mut len = 0;
     loop {
-        events.clear();
-
-        if let Err(e) = reader.map_events(&mut |x| {
-            if !filter.apply(x.fh()) {return Ok(())}
-
-            if let Some(e) = x.as_create()? {
-                events.push(Event::Create {
-                    p_fh: e.p_fh().to_owned(),
-                    fh: x.fh().to_owned(),
-                    name: e.name().to_os_string()
-                });
-            }
-
-            if let Some(e) = x.as_delete()? {
-                events.push(Event::Delete {
-                    p_fh: e.p_fh().to_owned(),
-                    fh: x.fh().to_owned(),
-                    name: e.name().to_os_string()
-                });
-            }
-
-            if let Some(e) = x.as_move()? {
-                events.push(Event::Move {
-                    old_p_fh: e.old_p_fh().to_owned(),
-                    new_p_fh: e.new_p_fh().to_owned(),
-                    fh: x.fh().to_owned(),
-                    old_name: e.old_name().to_os_string(),
-                    new_name: e.new_name().to_os_string()
-                });
-            }
-
-            Ok(())
-        }) {
-            log::warn!("Fanotify thread error: {e}")
+        if ptr >= len {
+            len = stream.read(&mut buf)?;
+            ptr = 0;
         }
-        if events.len() == 0 {continue}
-        tx.send(events.clone()).unwrap();
+
+        let (event, len) = fanotify::Event::from_slice(&buf[ptr..]);
+        ptr += len;
+
+        if !filter.apply(event.fh()) {continue}
+
+        tx.send(match event.r#type {
+            fanotify::EventType::Create(dfid) => Event::Create {
+                p_fh: event.p_fh(dfid).to_owned(),
+                fh:   event.fh()      .to_owned(),
+                name: event.name(dfid).to_owned()
+            },
+            fanotify::EventType::Delete(dfid) => Event::Delete {
+                p_fh: event.p_fh(dfid).to_owned(),
+                fh:   event.fh()      .to_owned(),
+                name: event.name(dfid).to_owned()
+            },
+            fanotify::EventType::Rename(old_dfid, new_dfid) => Event::Rename {
+                old_p_fh: event.p_fh(old_dfid).to_owned(),
+                new_p_fh: event.p_fh(new_dfid).to_owned(),
+                fh:       event.fh()          .to_owned(),
+                old_name: event.name(old_dfid).to_owned(),
+                new_name: event.name(new_dfid).to_owned()
+            },
+            fanotify::EventType::CreateDelete(_) => continue
+        })?;
     }
 }
 
 fn watch(path: &path::Path, filter: watchpath::Filter, conn: &mut rusqlite::Connection)
 -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel();
+    let fanotify_stream = create_fanotify_stream(path)?;
 
-    let path_buf = path.to_path_buf();
-
-    let _watch_thread = thread::spawn(move || {
-        if let Err(e) = fanotify_thread(path_buf, filter, tx) {
-            panic!("{:?}", e);
+    let _watch_thread = thread::spawn(|| {
+        if let Err(e) = process_fanotify_stream(fanotify_stream, filter, tx) {
+            panic!("{:?}", e)
         }
     });
 
@@ -237,7 +233,7 @@ fn watch(path: &path::Path, filter: watchpath::Filter, conn: &mut rusqlite::Conn
     loop {
         let first = rx.recv().unwrap();
 
-        debounce_queue.extend_from_slice(&first);
+        debounce_queue.push(first);
 
         loop {
             let msg = match rx.recv_timeout(debounce_duration) {
@@ -246,7 +242,7 @@ fn watch(path: &path::Path, filter: watchpath::Filter, conn: &mut rusqlite::Conn
                 _ => panic!()
             };
 
-            debounce_queue.extend_from_slice(&msg);
+            debounce_queue.push(msg);
         }
 
         log::debug!("Writing {} event(s) to DB", debounce_queue.len());
