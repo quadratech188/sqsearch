@@ -260,7 +260,7 @@ pub fn exec(globals: &GlobalArgs, args: &WatchArgs) -> anyhow::Result<()> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
     )?;
 
-    db::prepare_db(&conn)?;
+    db::prepare_db(&mut conn)?;
 
     let (path, filter) = watchpath::prepare_fanotify(&args.watch_path)?;
 

@@ -44,7 +44,7 @@ fn index(globals: GlobalArgs, args: IndexArgs) -> Result<(), anyhow::Error> {
         | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
     )?;
 
-    db::prepare_db(&conn)?;
+    db::prepare_db(&mut conn)?;
     indexer::index(&mut conn, &args.path)?;
 
     Ok(())
@@ -56,12 +56,12 @@ struct QueryArgs {
 }
 
 fn query(globals: GlobalArgs, _: QueryArgs) -> Result<(), anyhow::Error> {
-    let conn = rusqlite::Connection::open_with_flags(
+    let mut conn = rusqlite::Connection::open_with_flags(
         globals.db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
     )?;
 
-    db::prepare_db(&conn)?;
+    db::prepare_db(&mut conn)?;
     queryer::query(conn)?;
 
     Ok(())

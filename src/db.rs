@@ -26,23 +26,15 @@ pub fn map_db_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error> {
     Ok(x?)
 }
 
-pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
 
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "normal")?;
-    conn.pragma_update(None, "busy_timeout", -2000)?;
-    conn.pragma_update(None, "cache_size", -64 * 1024)?;
-    conn.pragma_update(None, "mmap_size", 1024 * 1024 * 1024)?;
-
+const MIGRATIONS_SLICE: &[rusqlite_migration::M<'_>] = &[
     // The files table needs to store every file/dir regardless of encoding, as we'll need to index
     // its subdirs, so we encode filenames as BLOB
     // But it doesn't make sense to run queries on invalid UTF-8, so we use TEXT for suffix_array,
     // and we just don't include entries for invalid UTF-8s at all
 
-    conn.execute_batch("
-        BEGIN;
-
-        CREATE TABLE IF NOT EXISTS files (
+    rusqlite_migration::M::up(r#"
+        CREATE TABLE files (
             id INTEGER PRIMARY KEY,
             file_handle BLOB,
             name BLOB,
@@ -50,16 +42,28 @@ pub fn prepare_db(conn: &rusqlite::Connection) -> Result<(), Error> {
             UNIQUE(parent_id, name)
         );
 
-        CREATE INDEX IF NOT EXISTS fanotify_lookup_idx ON files (file_handle, name);
+        CREATE INDEX fanotify_lookup_idx ON files(file_handle, name);
 
-        CREATE TABLE IF NOT EXISTS suffix_array (
+        CREATE TABLE suffix_array (
             suffix TEXT COLLATE NOCASE,
             id INTEGER,
             PRIMARY KEY (suffix, id)
         ) WITHOUT ROWID;
+    "#)
+];
 
-        COMMIT;
-    ")?;
+const MIGRATIONS: rusqlite_migration::Migrations<'_>
+    = rusqlite_migration::Migrations::from_slice(MIGRATIONS_SLICE);
+
+pub fn prepare_db(conn: &mut rusqlite::Connection) -> anyhow::Result<()> {
+
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "normal")?;
+    conn.pragma_update(None, "busy_timeout", -2000)?;
+    conn.pragma_update(None, "cache_size", -64 * 1024)?;
+    conn.pragma_update(None, "mmap_size", 1024 * 1024 * 1024)?;
+
+    MIGRATIONS.to_latest(conn)?;
 
     Ok(())
 }
