@@ -4,12 +4,13 @@ use clap::Parser;
 
 mod db;
 mod fanotify;
-mod indexer;
-mod watcher;
-mod queryer;
-mod watchpath;
-mod util;
 mod file_handle;
+mod indexer;
+mod queryer;
+mod gen_suffixes_vtab;
+mod util;
+mod watcher;
+mod watchpath;
 
 #[derive(clap::Parser, Debug)]
 struct CLI {
