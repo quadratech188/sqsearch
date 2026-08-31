@@ -1,10 +1,10 @@
 use std::{ffi::{OsStr, OsString}, os::unix::ffi::OsStrExt, path};
 
-use crate::file_handle::FileHan;
+use crate::{file_handle::FileHan, gen_suffixes_vtab};
 
 const ROOT_ID: i64 = 1;
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, PartialEq)]
 pub enum Error {
     #[error("DB error: {0}")]
     SQLite(#[from] rusqlite::Error),
@@ -49,6 +49,27 @@ const MIGRATIONS_SLICE: &[rusqlite_migration::M<'_>] = &[
             id INTEGER,
             PRIMARY KEY (suffix, id)
         ) WITHOUT ROWID;
+    "#),
+    rusqlite_migration::M::up(r#"
+        CREATE TRIGGER add_suffixes AFTER INSERT ON files BEGIN
+            INSERT INTO suffix_array
+            SELECT suffix, NEW.id FROM gen_suffixes(NEW.name);
+        END;
+
+        CREATE TRIGGER delete_suffixes AFTER DELETE ON files BEGIN
+            DELETE FROM suffix_array
+            WHERE suffix IN (SELECT suffix FROM gen_suffixes(OLD.name))
+            AND id = OLD.id;
+        END;
+
+        CREATE TRIGGER update_suffixes AFTER UPDATE ON files WHEN OLD.name != NEW.name BEGIN
+            DELETE FROM suffix_array
+            WHERE suffix IN (SELECT suffix FROM gen_suffixes(OLD.name))
+            AND id = OLD.id;
+
+            INSERT INTO suffix_array
+            SELECT suffix, NEW.id FROM gen_suffixes(NEW.name);
+        END;
     "#)
 ];
 
@@ -62,6 +83,8 @@ pub fn prepare_db(conn: &mut rusqlite::Connection) -> anyhow::Result<()> {
     conn.pragma_update(None, "busy_timeout", -2000)?;
     conn.pragma_update(None, "cache_size", -64 * 1024)?;
     conn.pragma_update(None, "mmap_size", 1024 * 1024 * 1024)?;
+
+    conn.create_module("gen_suffixes", &gen_suffixes_vtab::MODULE, None)?;
 
     MIGRATIONS.to_latest(conn)?;
 
@@ -131,20 +154,6 @@ fn get_name(tx: &rusqlite::Transaction, id: i64) -> Result<OsString, Error> {
     )})
 }
 
-fn create_suffixes(tx: &rusqlite::Transaction, id: i64, name: &OsStr)
--> Result<(), Error> {
-    // Return early for invalid UTF-8
-    let Some(name) = name.to_str() else {return Ok(())};
-
-    let mut stmt = tx.prepare_cached("
-        INSERT INTO suffix_array (suffix, id) VALUES(?1, ?2)
-    ")?;
-    for (i, _) in name.char_indices() {
-        stmt.execute((&name[i..], id))?;
-    }
-    Ok(())
-}
-
 pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &FileHan, name: &OsStr)
 -> Result<i64, Error> {
     let mut stmt = tx.prepare_cached("
@@ -152,49 +161,33 @@ pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &FileHan, name: &O
         ON CONFLICT DO NOTHING
     ")?;
 
-    let id = match stmt.insert((fh, parent_id, name.as_bytes())) {
+    match stmt.insert((fh, parent_id, name.as_bytes())) {
         Ok(x) => Ok(x),
         Err(rusqlite::Error::StatementChangedRows(0)) =>
             Err(Error::DuplicateFile),
         Err(e) => Err(e.into())
-    }?;
-
-    create_suffixes(tx, id, name)?;
-    Ok(id)
-}
-
-fn delete_suffixes(tx: &rusqlite::Transaction, id: i64, name: &OsStr)
--> Result<(), Error> {
-    let Some(name) = name.to_str() else {return Ok(())};
-
-    let mut stmt = tx.prepare_cached("
-        DELETE FROM suffix_array WHERE suffix = ?1 AND id = ?2
-    ")?;
-    for (i, _) in name.char_indices() {
-        stmt.execute((&name[i..], id))?;
     }
-    Ok(())
 }
 
 pub fn delete(tx: &rusqlite::Transaction, id: i64)
 -> Result<(), Error> {
-    delete_suffixes(tx, id, &get_name(tx, id)?)?;
-
     let mut stmt = tx.prepare_cached("
         DELETE FROM files WHERE id = ?1
     ")?;
 
-    transform_query_one_err(stmt.execute((id,)))?;
-
-    Ok(())
+    let rows_changed = stmt.execute((id,))?;
+    
+    match rows_changed {
+        0 => Err(Error::NoFile),
+        1 => Ok(()),
+        _ => Err(Error::DuplicateFile)
+    }
 }
 
 pub fn r#move(
     tx:&rusqlite::Transaction, id: i64,
     new_parent_id: i64, new_name: &OsStr
 ) -> Result<(), Error> {
-    let old_name = get_name(tx, id)?;
-
     let mut stmt = tx.prepare_cached("
         UPDATE files SET parent_id = ?1, name = ?2 WHERE id = ?3
     ")?;
@@ -207,10 +200,7 @@ pub fn r#move(
         Err(x) => Err(x.into())
     }?;
 
-    if old_name == new_name {return Ok(())}
-
-    delete_suffixes(tx, id, &old_name)?;
-    create_suffixes(tx, id, new_name)
+    Ok(())
 }
 
 pub fn get_path(tx: &rusqlite::Connection, row: &rusqlite::Row, segment_cnt: usize)
@@ -329,4 +319,77 @@ pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> 
     query += &conditions.join(" AND ");
 
     Ok((query, params))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Deref;
+
+use crate::{file_handle::FileHandle, util};
+
+use super::*;
+
+    fn memory_db() -> anyhow::Result<rusqlite::Connection> {
+        let mut conn = rusqlite::Connection::open_in_memory()?;
+        prepare_db(&mut conn)?;
+        Ok(conn)
+    }
+
+    fn make_fh(id: i64) -> FileHandle {
+        const LEN: usize = 24;
+        const TOTAL_LEN: usize = size_of::<util::file_handle>() + LEN;
+
+        let mut buf = [0; TOTAL_LEN];
+
+        buf[..8].copy_from_slice(&LEN.to_ne_bytes());
+        buf[8..16].copy_from_slice(&id.to_ne_bytes());
+
+        FileHan::read_from_buf(&buf).unwrap().to_owned()
+    }
+
+    fn count_suffixes(tx: &rusqlite::Transaction) -> anyhow::Result<usize> {
+        let mut stmt = tx.prepare_cached("
+            SELECT * FROM suffix_array
+        ")?;
+        Ok(stmt.query_map((), |_| Ok(()))?.count())
+    }
+
+    #[test]
+    fn make_db() -> anyhow::Result<()> {
+        memory_db()?;
+        Ok(())
+    }
+
+    #[test]
+    fn triggers_test() -> anyhow::Result<()> {
+        let mut conn = memory_db()?;
+
+        let tx = conn.transaction()?;
+
+        let mut create = tx.prepare_cached("
+            INSERT INTO files (file_handle, name, parent_id) VALUES(?1, ?2, ?3)
+        ")?;
+
+        let mut delete = tx.prepare_cached("
+            DELETE FROM files WHERE id = ?1
+        ")?;
+
+        let mut rename = tx.prepare_cached("
+            UPDATE files SET parent_id = ?1, name = ?2 WHERE id = ?3
+        ")?;
+
+        let id1 = create.insert((make_fh(1).deref(), "test1".as_bytes(), 0))?;
+        assert_eq!(count_suffixes(&tx)?, 5);
+
+        let id2 = create.insert((make_fh(2).deref(), "test2".as_bytes(), 0))?;
+        assert_eq!(count_suffixes(&tx)?, 10);
+
+        delete.execute((id1,))?;
+        assert_eq!(count_suffixes(&tx)?, 5);
+
+        rename.execute((0, "long-name".as_bytes(), id2))?;
+        assert_eq!(count_suffixes(&tx)?, 9);
+
+        Ok(())
+    }
 }

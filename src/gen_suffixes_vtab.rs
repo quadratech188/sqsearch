@@ -3,7 +3,7 @@ use std::{ffi, mem, os::unix::ffi::OsStrExt};
 use rusqlite::vtab::Module;
 
 #[repr(C)]
-struct SuffixesVtab {
+pub struct SuffixesVtab {
     base: rusqlite::vtab::sqlite3_vtab
 }
 
@@ -56,7 +56,7 @@ unsafe impl rusqlite::vtab::VTab<'_> for SuffixesVtab {
 }
 
 #[repr(C)]
-struct SuffixesVtabCursor {
+pub struct SuffixesVtabCursor {
     base: rusqlite::vtab::sqlite3_vtab_cursor,
 
     osstring: ffi::OsString,
@@ -108,7 +108,7 @@ unsafe impl rusqlite::vtab::VTabCursor for SuffixesVtabCursor {
     }
 }
 
-const MODULE: rusqlite::vtab::Module<SuffixesVtab> = Module::eponymous_only_module();
+pub const MODULE: rusqlite::vtab::Module<SuffixesVtab> = Module::eponymous_only_module();
 
 #[cfg(test)]
 mod tests {
