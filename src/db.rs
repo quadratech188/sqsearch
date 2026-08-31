@@ -38,7 +38,7 @@ const MIGRATIONS_SLICE: &[rusqlite_migration::M<'_>] = &[
             id INTEGER PRIMARY KEY,
             file_handle BLOB,
             name BLOB,
-            parent_id INTEGER,
+            parent_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
             UNIQUE(parent_id, name)
         );
 
@@ -49,8 +49,7 @@ const MIGRATIONS_SLICE: &[rusqlite_migration::M<'_>] = &[
             id INTEGER,
             PRIMARY KEY (suffix, id)
         ) WITHOUT ROWID;
-    "#),
-    rusqlite_migration::M::up(r#"
+
         CREATE TRIGGER add_suffixes AFTER INSERT ON files BEGIN
             INSERT INTO suffix_array
             SELECT suffix, NEW.id FROM gen_suffixes(NEW.name);
@@ -83,6 +82,8 @@ pub fn prepare_db(conn: &mut rusqlite::Connection) -> anyhow::Result<()> {
     conn.pragma_update(None, "busy_timeout", -2000)?;
     conn.pragma_update(None, "cache_size", -64 * 1024)?;
     conn.pragma_update(None, "mmap_size", 1024 * 1024 * 1024)?;
+
+    conn.pragma_update(None, "foreign_keys", true)?;
 
     conn.create_module("gen_suffixes", &gen_suffixes_vtab::MODULE, None)?;
 
@@ -347,10 +348,10 @@ use super::*;
         FileHan::read_from_buf(&buf).unwrap().to_owned()
     }
 
-    fn count_suffixes(tx: &rusqlite::Transaction) -> anyhow::Result<usize> {
-        let mut stmt = tx.prepare_cached("
-            SELECT * FROM suffix_array
-        ")?;
+    fn count_rows(tx: &rusqlite::Transaction, name: &str) -> anyhow::Result<usize> {
+        let mut stmt = tx.prepare_cached(&format!("
+            SELECT * FROM {name}
+        "))?;
         Ok(stmt.query_map((), |_| Ok(()))?.count())
     }
 
@@ -363,7 +364,6 @@ use super::*;
     #[test]
     fn triggers_test() -> anyhow::Result<()> {
         let mut conn = memory_db()?;
-
         let tx = conn.transaction()?;
 
         let mut create = tx.prepare_cached("
@@ -378,17 +378,45 @@ use super::*;
             UPDATE files SET parent_id = ?1, name = ?2 WHERE id = ?3
         ")?;
 
-        let id1 = create.insert((make_fh(1).deref(), "test1".as_bytes(), 0))?;
-        assert_eq!(count_suffixes(&tx)?, 5);
+        // Root: Set parent_id = NULL
+        let root = create.insert((make_fh(1).deref(), "".as_bytes(), None::<i64>))?;
 
-        let id2 = create.insert((make_fh(2).deref(), "test2".as_bytes(), 0))?;
-        assert_eq!(count_suffixes(&tx)?, 10);
+        let id1 = create.insert((make_fh(1).deref(), "test1".as_bytes(), root))?;
+        assert_eq!(count_rows(&tx, "suffix_array")?, 5);
+
+        let id2 = create.insert((make_fh(2).deref(), "test2".as_bytes(), root))?;
+        assert_eq!(count_rows(&tx, "suffix_array")?, 10);
 
         delete.execute((id1,))?;
-        assert_eq!(count_suffixes(&tx)?, 5);
+        assert_eq!(count_rows(&tx, "suffix_array")?, 5);
 
-        rename.execute((0, "long-name".as_bytes(), id2))?;
-        assert_eq!(count_suffixes(&tx)?, 9);
+        rename.execute((root, "long-name".as_bytes(), id2))?;
+        assert_eq!(count_rows(&tx, "suffix_array")?, 9);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ripple_delete() -> anyhow::Result<()> {
+        let mut conn = memory_db()?;
+        let tx = conn.transaction()?;
+
+        let mut create = tx.prepare_cached("
+            INSERT INTO files (file_handle, name, parent_id) VALUES(?1, ?2, ?3)
+        ")?;
+
+        let mut delete = tx.prepare_cached("
+            DELETE FROM files WHERE id = ?1
+        ")?;
+
+        let root = create.insert((make_fh(1).deref(), "".as_bytes(), None::<i64>))?;
+        let id1 = create.insert((make_fh(1).deref(), "test1".as_bytes(), root))?;
+        create.insert((make_fh(2).deref(), "test2".as_bytes(), id1))?;
+
+        assert_eq!(count_rows(&tx, "files")?, 3);
+
+        delete.execute((root,))?;
+        assert_eq!(count_rows(&tx, "files")?, 0);
 
         Ok(())
     }
