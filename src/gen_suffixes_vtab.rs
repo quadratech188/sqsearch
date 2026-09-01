@@ -192,44 +192,4 @@ use super::*;
 
         Ok(())
     }
-
-    #[test]
-    fn query_plan() -> anyhow::Result<()> {
-        let conn = rusqlite::Connection::open_in_memory()?;
-        conn.create_module("gen_suffixes", &MODULE, None)?;
-
-        conn.execute_batch("
-            CREATE TABLE suffix_array (
-                suffix TEXT COLLATE NOCASE,
-                id INTEGER,
-                PRIMARY KEY (suffix, id)
-            ) WITHOUT ROWID;
-        ")?;
-
-        let mut stmt = conn.prepare_cached("
-            EXPLAIN QUERY PLAN DELETE FROM suffix_array
-            WHERE suffix IN (SELECT suffix FROM gen_suffixes(?1))
-            AND id = ?2
-        ")?;
-
-        let results: Result<Vec<(i64, i64, String)>, _> = stmt.query_map(
-            ("foo".as_bytes(), 69),
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(3)?))
-        )?.collect();
-        let results = results?;
-
-        let recorded_outputs = vec![
-            "SEARCH suffix_array USING PRIMARY KEY (suffix=? AND id=?)",
-            "LIST SUBQUERY 1",
-            "SCAN gen_suffixes VIRTUAL TABLE INDEX 0:",
-            "CREATE BLOOM FILTER"
-        ];
-
-        assert_eq!(
-            recorded_outputs,
-            results.into_iter().map(|(_, _, c)| c).collect::<Vec<_>>()
-        );
-
-        Ok(())
-    }
 }

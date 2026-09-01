@@ -4,28 +4,23 @@ use crate::{file_handle::FileHan, gen_suffixes_vtab};
 
 const ROOT_ID: i64 = 1;
 
-#[derive(thiserror::Error, Debug, PartialEq)]
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
-    #[error("DB error: {0}")]
+    #[error("Misc DB errror: {0}")]
     SQLite(#[from] rusqlite::Error),
-    #[error("Bad query:")]
-    BadQuery,
-    #[error("Failed to find path for file")]
-    IncompletePath,
+    #[error("Migration error: {0}")]
+    Migration(#[from] rusqlite_migration::Error),
 
-    #[error("File doesn't exist")]
+    #[error("Multiple files matching the criteria already exist")]
+    ManyFiles,
+    #[error("No files matching the criteria exist")]
     NoFile,
-    #[error("Two or more files satisfying the criteria exist")]
-    DuplicateFile,
+    #[error("A file with the same parent and name already exists")]
+    NameTaken,
 
-    #[error("Provided file handle is not the root")]
+    #[error("Provided file is not root of file tree")]
     BadRoot
 }
-
-pub fn map_db_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error> {
-    Ok(x?)
-}
-
 
 const MIGRATIONS_SLICE: &[rusqlite_migration::M<'_>] = &[
     // The files table needs to store every file/dir regardless of encoding, as we'll need to index
@@ -75,8 +70,7 @@ const MIGRATIONS_SLICE: &[rusqlite_migration::M<'_>] = &[
 const MIGRATIONS: rusqlite_migration::Migrations<'_>
     = rusqlite_migration::Migrations::from_slice(MIGRATIONS_SLICE);
 
-pub fn prepare_db(conn: &mut rusqlite::Connection) -> anyhow::Result<()> {
-
+pub fn prepare_db(conn: &mut rusqlite::Connection) -> Result<(), Error> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "normal")?;
     conn.pragma_update(None, "busy_timeout", -2000)?;
@@ -93,16 +87,12 @@ pub fn prepare_db(conn: &mut rusqlite::Connection) -> anyhow::Result<()> {
 }
 
 pub fn ensure_root(tx: &rusqlite::Transaction, fh: &FileHan) -> Result<(), Error> {
-    match get_single_id(tx, fh) {
-        Ok(ROOT_ID) => {
-            Ok(())
-        }
-        Ok(_) => {
-            Err(Error::BadRoot)
-        }
+    match get_dir_id(tx, fh) {
+        Ok(ROOT_ID) => Ok(()),
+        Ok(_) => Err(Error::BadRoot),
         Err(Error::NoFile) => {
-            create(tx, ROOT_ID, fh, OsStr::new(""))?;
-            Ok(())
+            let id = create(tx, fh, OsStr::new(""), ROOT_ID)?;
+            if id == ROOT_ID {Ok(())} else {Err(Error::BadRoot)}
         }
         Err(e) => Err(e)
     }
@@ -111,101 +101,107 @@ pub fn ensure_root(tx: &rusqlite::Transaction, fh: &FileHan) -> Result<(), Error
 fn transform_query_one_err<T>(x: Result<T, rusqlite::Error>) -> Result<T, Error> {
     match x {
         Ok(x) => Ok(x),
-        Err(rusqlite::Error::QueryReturnedMoreThanOneRow) =>
-            Err(Error::DuplicateFile),
-        Err(rusqlite::Error::QueryReturnedNoRows) =>
-            Err(Error::NoFile),
-        Err(x) => Err(Error::SQLite(x))
+        Err(rusqlite::Error::QueryReturnedMoreThanOneRow) => Err(Error::ManyFiles),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(Error::NoFile),
+        Err(e) => Err(Error::SQLite(e))
     }
 }
 
-pub fn get_single_id(tx: &rusqlite::Transaction, fh: &FileHan) -> Result<i64, Error> {
+// Only files can share file handles; directory file handles are unique
+pub fn get_dir_id(tx: &rusqlite::Transaction, fh: &FileHan) -> Result<i64, Error> {
     let mut stmt = tx.prepare_cached("
         SELECT id FROM files WHERE file_handle = ?1
     ")?;
 
-    transform_query_one_err(stmt.query_one((fh,), |x| x.get(0)))
+    transform_query_one_err(
+        stmt.query_one((fh,), |row| row.get(0))
+    )
 }
 
-pub fn get_rough_id(tx: &rusqlite::Transaction, parent_id: i64, name: &OsStr)
+pub fn get_dirent_id(tx: &rusqlite::Transaction, name: &OsStr, p_id: i64)
 -> Result<i64, Error> {
+
     let mut stmt = tx.prepare_cached("
         SELECT id FROM files WHERE name = ?1 AND parent_id = ?2
     ")?;
 
-    transform_query_one_err(stmt.query_one((name.as_bytes(), parent_id), |x| x.get(0)))
+    transform_query_one_err(
+        stmt.query_one((name.as_bytes(), p_id), |row| row.get(0))
+    )
 }
 
-pub fn get_id(tx: &rusqlite::Transaction, parent_id: i64, fh: &FileHan, name: &OsStr)
+pub fn create(tx: &rusqlite::Transaction, fh: &FileHan, name: &OsStr, p_id: i64)
 -> Result<i64, Error> {
+
     let mut stmt = tx.prepare_cached("
-        SELECT id FROM files WHERE file_handle = ?1 AND name = ?2 AND parent_id = ?3
+        INSERT INTO files (file_handle, name, parent_id)
+        VALUES(?1, ?2, ?3)
     ")?;
 
-    transform_query_one_err(stmt.query_one((fh, name.as_bytes(), parent_id), |x| x.get(0)))
-}
+    match stmt.insert((fh, name.as_bytes(), p_id)) {
+        Ok(id) => Ok(id),
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if err.code == rusqlite::ErrorCode::ConstraintViolation
 
-fn get_name(tx: &rusqlite::Transaction, id: i64) -> Result<OsString, Error> {
-    let mut stmt = tx.prepare_cached("
-        SELECT name FROM files WHERE id = ?1;
-    ")?;
-
-    Ok(unsafe {OsString::from_encoded_bytes_unchecked(
-        stmt.query_one((id,), |x| x.get(0))?
-    )})
-}
-
-pub fn create(tx: &rusqlite::Transaction, parent_id: i64, fh: &FileHan, name: &OsStr)
--> Result<i64, Error> {
-    let mut stmt = tx.prepare_cached("
-        INSERT INTO files (file_handle, parent_id, name) VALUES(?1, ?2, ?3)
-        ON CONFLICT DO NOTHING
-    ")?;
-
-    match stmt.insert((fh, parent_id, name.as_bytes())) {
-        Ok(x) => Ok(x),
-        Err(rusqlite::Error::StatementChangedRows(0)) =>
-            Err(Error::DuplicateFile),
-        Err(e) => Err(e.into())
+            => Err(Error::NameTaken),
+        Err(e) => Err(Error::SQLite(e))
     }
 }
 
-pub fn delete(tx: &rusqlite::Transaction, id: i64)
+pub fn delete(tx: &rusqlite::Transaction, fh: &FileHan, name: &OsStr, p_id: i64)
 -> Result<(), Error> {
+
     let mut stmt = tx.prepare_cached("
-        DELETE FROM files WHERE id = ?1
+        DELETE FROM files
+        WHERE file_handle = ?1 AND name = ?2 AND parent_id = ?3
     ")?;
 
-    let rows_changed = stmt.execute((id,))?;
-    
-    match rows_changed {
+    match stmt.execute((fh, name.as_bytes(), p_id))? {
         0 => Err(Error::NoFile),
         1 => Ok(()),
-        _ => Err(Error::DuplicateFile)
+        _ => Err(Error::ManyFiles)
     }
 }
 
-pub fn r#move(
-    tx:&rusqlite::Transaction, id: i64,
-    new_parent_id: i64, new_name: &OsStr
-) -> Result<(), Error> {
+pub fn delete_with_id(tx: &rusqlite::Transaction, id: i64) -> Result<(), Error> {
     let mut stmt = tx.prepare_cached("
-        UPDATE files SET parent_id = ?1, name = ?2 WHERE id = ?3
+        DELETE FROM files
+        WHERE id = ?1
     ")?;
 
-    match stmt.execute((new_parent_id, new_name.as_bytes(), id)) {
-        Ok(x) => Ok(x),
-        Err(e) if e.sqlite_error_code() ==
-            Some(rusqlite::ErrorCode::ConstraintViolation) =>
-            Err(Error::DuplicateFile),
-        Err(x) => Err(x.into())
-    }?;
-
-    Ok(())
+    match stmt.execute((id,))? {
+        0 => Err(Error::NoFile),
+        1 => Ok(()),
+        _ => Err(Error::ManyFiles)
+    }
 }
+
+pub fn update(
+    tx: &rusqlite::Transaction, fh: &FileHan,
+    old_name: &OsStr, old_p_id: i64,
+    new_name: &OsStr, new_p_id: i64
+) -> Result<(), Error> {
+
+    let mut stmt = tx.prepare_cached("
+        UPDATE files SET name = ?1, parent_id = ?2
+        Where file_handle = ?3 AND name = ?4 AND parent_id = ?5
+    ")?;
+
+    match stmt.execute((new_name.as_bytes(), new_p_id, fh, old_name.as_bytes(), old_p_id)) {
+        Ok(0) => Err(Error::NoFile),
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if err.code == rusqlite::ErrorCode::ConstraintViolation
+
+            => Err(Error::NameTaken),
+        Err(e) => Err(Error::SQLite(e))
+    }
+}
+
 
 pub fn get_path(tx: &rusqlite::Connection, row: &rusqlite::Row, segment_cnt: usize)
 -> Result<path::PathBuf, Error> {
+
     // row[0]: s0.id
     // row[1 ... segment_cnt]: s0.name ... s{segment_cnt - 1}.name
 
@@ -215,30 +211,18 @@ pub fn get_path(tx: &rusqlite::Connection, row: &rusqlite::Row, segment_cnt: usi
 
     let mut names = vec![];
     let mut ptr = row.get(0)?;
-    let mut cnt = 0;
     
     loop {
-        let (name, parent_id): (OsString, i64) = match stmt.query_one((ptr,), |x| {
-                Ok((
-                    unsafe {OsString::from_encoded_bytes_unchecked(x.get(0)?)},
-                    x.get(1)?
-                ))
-            }) {
-            Ok(x) => Ok(x),
-            Err(rusqlite::Error::QueryReturnedNoRows)
-            => Err(Error::IncompletePath),
-            Err(e) => Err(e.into())
-        }?;
-
+        let (name, parent_id): (OsString, i64) = stmt.query_one((ptr,), |x| {
+            Ok((
+                unsafe {OsString::from_encoded_bytes_unchecked(x.get(0)?)},
+                x.get(1)?
+            ))
+        })?;
         names.push(name);
 
         if parent_id == ROOT_ID {break}
         ptr = parent_id;
-
-        cnt += 1;
-        if cnt > 1000 {
-            return Err(Error::IncompletePath)
-        }
     }
 
     let mut path = path::PathBuf::new();
@@ -260,12 +244,10 @@ fn estimate_specifity(segments: &[&str]) -> Vec<i64> {
     segments.iter().map(|x| x.len() as i64).collect()
 }
 
-pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> {
+pub fn prepare_query(segments: &[&str]) -> Option<(String, Vec<String>)> {
     let scores = estimate_specifity(segments);
 
-    let Some(best_index) = (0..scores.len()).max_by_key(|&x| scores[x]) else {
-        return Err(Error::BadQuery)
-    };
+    let Some(best_index) = (0..scores.len()).max_by_key(|&x| scores[x]) else {return None};
 
     let mut joins = vec![];
     let mut params = vec![];
@@ -319,7 +301,7 @@ pub fn prepare_query(segments: &[&str]) -> Result<(String, Vec<String>), Error> 
     query += " WHERE ";
     query += &conditions.join(" AND ");
 
-    Ok((query, params))
+    Some((query, params))
 }
 
 #[cfg(test)]
@@ -392,6 +374,92 @@ use super::*;
 
         rename.execute((root, "long-name".as_bytes(), id2))?;
         assert_eq!(count_rows(&tx, "suffix_array")?, 9);
+
+        Ok(())
+    }
+
+    fn assert_query_plan<Params>(
+        conn: &rusqlite::Connection,
+        query: &str, params: Params, expect: Vec<&str>
+    ) -> anyhow::Result<()>
+    where Params: rusqlite::Params {
+        let mut stmt = conn.prepare_cached(&format!(
+            "EXPLAIN QUERY PLAN {query}"
+        ))?;
+
+        let result: Result<Vec<String>, _> = stmt.query_map(params, |row| row.get(3))?.collect();
+        let result = result?;
+
+        assert_eq!(result, expect);
+        Ok(())
+    }
+
+    #[test]
+    fn query_plans() -> anyhow::Result<()> {
+        let conn = memory_db()?;
+
+        assert_query_plan(
+            &conn,
+            "
+                INSERT INTO suffix_array
+                SELECT suffix, ?1 FROM gen_suffixes(?2);
+            ",
+            (1, "a".as_bytes()),
+            vec![
+                "SCAN gen_suffixes VIRTUAL TABLE INDEX 0:"
+            ]
+        )?;
+        assert_query_plan(
+            &conn,
+            "
+                DELETE FROM suffix_array
+                WHERE suffix IN (SELECT suffix FROM gen_suffixes(?1))
+                AND id = ?2;
+            ",
+            (1, "a".as_bytes()),
+            vec![
+                "SEARCH suffix_array USING PRIMARY KEY (suffix=? AND id=?)",
+                "LIST SUBQUERY 1",
+                "SCAN gen_suffixes VIRTUAL TABLE INDEX 0:",
+                "CREATE BLOOM FILTER"
+            ]
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn check_query() -> anyhow::Result<()> {
+        let (query, params) = prepare_query(&["a", "long", "b"]).unwrap();
+        assert_eq!(
+            query,
+            [
+                "SELECT DISTINCT s0.id, s0.name, s1.name, s2.name FROM suffix_array",
+                "CROSS JOIN files AS s1",
+                "CROSS JOIN files AS s0",
+                "CROSS JOIN files AS s2 WHERE",
+                "suffix_array.suffix >= ? AND suffix_array.suffix < ?",
+                "AND s1.id = suffix_array.id",
+                "AND s0.id = s1.parent_id",
+                "AND LOWER(CAST(s0.name AS TEXT)) LIKE LOWER(?)",
+                "AND s2.parent_id = s1.id",
+                "AND LOWER(CAST(s2.name AS TEXT)) LIKE LOWER(?)"
+            ].join(" ")
+        );
+        assert_eq!(params, vec!["long", "long\u{10ffff}", "%a%", "%b%"]);
+
+        assert_query_plan(
+            &memory_db()?,
+            &query,
+            rusqlite::params_from_iter(params),
+            vec![
+                "SEARCH suffix_array USING PRIMARY KEY (suffix>? AND suffix<?)",
+                "SEARCH s1 USING INTEGER PRIMARY KEY (rowid=?)",
+                "SEARCH s0 USING INTEGER PRIMARY KEY (rowid=?)",
+                "SEARCH s2 USING COVERING INDEX sqlite_autoindex_files_1 (parent_id=?)",
+                "USE TEMP B-TREE FOR DISTINCT"
+            ]
+        )?;
 
         Ok(())
     }

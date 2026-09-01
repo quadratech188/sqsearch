@@ -1,6 +1,6 @@
 use std::{ffi::{self, OsStr, OsString}, fs, io::{self, Read}, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, sync::mpsc, thread, time};
 
-use crate::{GlobalArgs, db, fanotify, file_handle::FileHandle, watchpath};
+use crate::{GlobalArgs, db, fanotify, file_handle::{FileHan, FileHandle}, watchpath};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct WatchArgs {
@@ -29,108 +29,95 @@ pub enum Event {
     }
 }
 
-fn get_parent_id(tx: &rusqlite::Transaction, p_fh: &FileHandle, name: &OsStr)
--> Result<i64, db::Error> {
-        let id = db::get_single_id(&tx, p_fh);
-        if let Err(db::Error::NoFile) = id {
-            log::warn!("Failed to find parent of file: {}", name.display())
-        }
-        Ok(id?)
-}
-
-fn handle_create(tx: &rusqlite::Transaction, p_fh: &FileHandle, fh: &FileHandle, name: &OsStr)
--> Result<(), db::Error> {
-    let parent_id = get_parent_id(tx, p_fh, name)?;
-
-    match db::create(tx, parent_id, fh, name) {
-        Ok(x) => Ok(x),
-        Err(db::Error::DuplicateFile) => {
-            log::warn!(
-                "File `{}` already exists at location, overwriting",
-                name.display()
-            );
-            db::delete(tx, db::get_rough_id(tx, parent_id, name)?)?;
-            db::create(tx, parent_id, fh, name)?;
-            return Ok(())
-        }
-        Err(e) => Err(e)
-    }?;
-    Ok(())
-}
-
-fn handle_delete(tx: &rusqlite::Transaction, p_fh: &FileHandle, fh: &FileHandle, name: &OsStr)
--> Result<(), db::Error> {
-    let parent_id = get_parent_id(tx, p_fh, name)?;
-
-    let id = match db::get_id(tx, parent_id, fh, name) {
-        Ok(x) => Ok(x),
-        Err(db::Error::NoFile) => {
-            log::warn!(
-                "Attempted to delete file `{}` that doesn't exist", 
-                name.display()
-            );
-            return Ok(())
-        }
-        Err(e) => Err(e)
-    }?;
-
-    db::delete(tx, id)?;
-    Ok(())
-}
+// Reporting principles:
+// - If we didn't know about the parent, don't report anything
+// - If we did know, report everything
 
 fn handle_move(
     tx: &rusqlite::Transaction,
-    old_p_fh: &FileHandle, new_p_fh: &FileHandle, fh: &FileHandle, old_name: &OsStr, new_name: &OsStr
+    fh: &FileHan,
+    from: Option<(&OsStr, &FileHan)>, to: Option<(&OsStr, &FileHan)>
 ) -> Result<(), db::Error> {
-    let old_parent_id = get_parent_id(tx, old_p_fh, old_name)?;
-    let new_parent_id = get_parent_id(tx, new_p_fh, new_name)?;
-
-    let id = match db::get_id(tx, old_parent_id, fh, old_name) {
-        Ok(x) => Ok(x),
-        Err(db::Error::NoFile) => {
-            log::warn!(
-                "Attempted to move file `{}` that doesn't exist. creating new file.",
-                old_name.display()
-            );
-            db::create(tx, new_parent_id, fh, new_name)?;
-            return Ok(())
+    // If we can't find the parent, pretend it doesn't exist (None)
+    let get_ids = |(name, fh)| {
+        match db::get_dir_id(tx, fh) {
+            Ok(id) => Ok(Some((name, id))),
+            Err(db::Error::NoFile) => Ok(None),
+            Err(e) => Err(e)
         }
-        Err(e) => Err(e)
-    }?;
+    };
 
-    match db::r#move(tx, id, new_parent_id, new_name) {
-        Ok(x) => Ok(x),
-        Err(db::Error::DuplicateFile) => {
-            // touch a; touch b; mv a b
-            db::delete(tx, db::get_rough_id(tx, new_parent_id, new_name)?)?;
-            db::r#move(tx, id, new_parent_id, new_name)?;
-            return Ok(())
+    let mut from = from.map_or(Ok(None), get_ids)?;
+    let to = to.map_or(Ok(None), get_ids)?;
+
+    loop {
+        let result = match (from, to) {
+            (Some((old_name, old_p_id)), Some((new_name, new_p_id)))
+                => db::update(tx, fh, old_name, old_p_id, new_name, new_p_id),
+            (Some((name, p_id)), None)
+                => db::delete(tx, fh, name, p_id),
+            (None, Some((name, p_id)))
+                => db::create(tx, fh, name, p_id).map(|_| ()),
+            (None, None) => break
+        };
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(db::Error::NoFile) => {
+                let (name, p_id) = from.unwrap();
+
+                log::warn!(
+                    "Source entry missing: parent_id={}, name={}; ignoring",
+                    p_id, name.display()
+                );
+                from = None;
+            },
+            Err(db::Error::NameTaken) => {
+                let (name, p_id) = to.unwrap();
+
+                log::warn!(
+                    "Destination entry conflict: parent_id={}, name={}; overwriting",
+                    p_id, name.display()
+                );
+                db::delete_with_id(tx, db::get_dirent_id(tx, name, p_id)?)?;
+            }
+            Err(e) => return Err(e)
         }
-        Err(e) => Err(e)
-    }?;
+    }
     Ok(())
 }
 
 fn handle_events(conn: &mut rusqlite::Connection, events: &[Event])
 -> Result<(), db::Error> {
-    let tx = db::map_db_err(conn.transaction())?;
+    let tx = conn.transaction()?;
 
     for event in events {
         match event {
             Event::Create {p_fh, fh, name} => {
-                handle_create(&tx, p_fh, fh, name)
+                handle_move(
+                    &tx, fh,
+                    None,
+                    Some((name, p_fh))
+                )
             }
             Event::Delete { p_fh, fh, name } => {
-                handle_delete(&tx, p_fh, fh, name)
+                handle_move(
+                    &tx, fh,
+                    Some((name, p_fh)),
+                    None
+                )
             }
             Event::Rename { old_p_fh, new_p_fh, fh, old_name, new_name } => {
-                handle_move(&tx, old_p_fh, new_p_fh, fh, old_name, new_name)
+                handle_move(
+                    &tx, fh,
+                    Some((old_name, old_p_fh)),
+                    Some((new_name, new_p_fh)),
+                )
             }
         }?
     }
 
-    db::map_db_err(tx.commit())?;
-
+    tx.commit()?;
     Ok(())
 }
 

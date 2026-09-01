@@ -2,22 +2,13 @@ use std::{io, sync::mpsc, thread, time};
 
 use crate::db;
 
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error(transparent)]
-    DB(#[from] db::Error),
-    #[error("Bad query")]
-    BadQuery
-}
-
 fn print_results(
     conn: &rusqlite::Connection, rows: &mut rusqlite::Rows,
     row_length: usize, count: usize
-) -> Result<usize, Error> {
+) -> Result<usize, db::Error> {
     let mut cnt = 0;
     loop {
-        let Some(row) = db::map_db_err(rows.next())? else {return Ok(cnt)};
+        let Some(row) = rows.next()? else {return Ok(cnt)};
 
         let path = db::get_path(conn, row, row_length)?;
 
@@ -29,25 +20,23 @@ fn print_results(
     }
 }
 
-fn do_query(conn: &rusqlite::Connection, msg: &str) -> Result<(), Error> {
+fn do_query(conn: &rusqlite::Connection, msg: &str) -> Result<(), db::Error> {
     let (count, msg) = match msg.strip_prefix("COUNT ") {
         None => (usize::MAX, msg),
         Some(x) => {
-            let (count, query) = x.split_once(' ')
-                .ok_or(Error::BadQuery)?;
-            let count = count.parse()
-                .map_err(|_| Error::BadQuery)?;
+            let Some((count, query)) = x.split_once(' ') else {return Ok(())};
+            let Ok(count) = count.parse() else {return Ok(())};
             (count, query)
         }
     };
 
     let segments = msg.split("/").collect::<Vec<_>>();
 
-    let (query, params) = db::prepare_query(&segments)?;
+    let Some((query, params)) = db::prepare_query(&segments) else {return Ok(())};
     log::debug!("Query: {}", query);
 
-    let mut stmt = db::map_db_err(conn.prepare_cached(&query))?;
-    let mut rows = db::map_db_err(stmt.query(rusqlite::params_from_iter(params)))?;
+    let mut stmt = conn.prepare_cached(&query)?;
+    let mut rows = stmt.query(rusqlite::params_from_iter(params))?;
 
     print_results(conn, &mut rows, segments.len(), count)?;
     Ok(())
@@ -66,7 +55,7 @@ pub fn query(conn: rusqlite::Connection) -> Result<(), anyhow::Error> {
 
             match do_query(&conn, &msg) {
                 Ok(()) => (),
-                Err(Error::DB(db::Error::SQLite(e))) if e.sqlite_error_code()
+                Err(db::Error::SQLite(e)) if e.sqlite_error_code()
                     == Some(rusqlite::ErrorCode::OperationInterrupted)
                     => (),
                 Err(e) => println!("ERROR {}", e)

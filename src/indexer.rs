@@ -23,11 +23,11 @@ fn index_path(tx: &mut rusqlite::Transaction, path: &path::Path) -> Result<(), a
     let (_, p_fh) = util::get_fh(parent)
         .with_context(|| format!("Failed to get file handle of `{}`", parent.display()))?;
 
-    let parent_id = db::get_single_id(&tx, &p_fh)
+    let parent_id = db::get_dir_id(&tx, &p_fh)
         .with_context(|| format!("Failed to get database ID of `{}`", parent.display()))?;
 
-    match db::create(&tx, parent_id, &fh, filename) {
-        Err(db::Error::DuplicateFile) => {
+    match db::create(&tx, &fh, filename, parent_id) {
+        Err(db::Error::ManyFiles) => {
             // ignore
         }
         Err(e) => {
@@ -58,8 +58,8 @@ pub fn index(conn: &mut rusqlite::Connection, path: &path::Path) -> Result<(), a
             log::info!("{} {}", i, path.display());
         }
         if i % 10000 == 0 {
-            db::map_db_err(tx.commit())?;
-            tx = db::map_db_err(conn.transaction())?;
+            tx.commit()?;
+            tx = conn.transaction()?;
         }
     }
 
