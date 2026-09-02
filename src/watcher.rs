@@ -75,10 +75,15 @@ fn handle_move(
             Err(db::Error::NameTaken) => {
                 let (name, p_id) = to.unwrap();
 
-                log::warn!(
-                    "Destination entry conflict: parent_id={}, name={}; overwriting",
-                    p_id, name.display()
-                );
+                if let None = from {
+                    // touch a; touch b; mv a b
+                    // This is normal behavior for updates, so don't print the warning
+                    log::warn!(
+                        "Destination entry conflict: parent_id={}, name={}; overwriting",
+                        p_id, name.display()
+                    );
+                }
+
                 db::delete_with_id(tx, db::get_dirent_id(tx, name, p_id)?)?;
             }
             Err(e) => return Err(e)
