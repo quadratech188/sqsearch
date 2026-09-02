@@ -482,9 +482,11 @@ use super::*;
         create.insert((make_fh(2).deref(), "test2".as_bytes(), id1))?;
 
         assert_eq!(count_rows(&tx, "files")?, 3);
+        assert_eq!(count_rows(&tx, "suffix_array")?, 10);
 
         delete.execute((root,))?;
         assert_eq!(count_rows(&tx, "files")?, 0);
+        assert_eq!(count_rows(&tx, "suffix_array")?, 0);
 
         Ok(())
     }
