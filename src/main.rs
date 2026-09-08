@@ -30,7 +30,7 @@ struct GlobalArgs {
 enum Commands {
     Watch(watcher::WatchArgs),
     Index(IndexArgs),
-    Query(QueryArgs)
+    Query(queryer::QueryArgs)
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -51,23 +51,6 @@ fn index(globals: GlobalArgs, args: IndexArgs) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[derive(clap::Args, Debug, Clone)]
-struct QueryArgs {
-
-}
-
-fn query(globals: GlobalArgs, _: QueryArgs) -> Result<(), anyhow::Error> {
-    let mut conn = rusqlite::Connection::open_with_flags(
-        globals.db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-    )?;
-
-    db::prepare_db(&mut conn)?;
-    queryer::query(conn)?;
-
-    Ok(())
-}
-
 fn main() -> Result<(), anyhow::Error> {
     env_logger::Builder::from_env(
         env_logger::Env::default()
@@ -79,6 +62,6 @@ fn main() -> Result<(), anyhow::Error> {
     match args.command {
         Commands::Watch(x) => watcher::exec(&args.globals, &x),
         Commands::Index(x) => index(args.globals, x),
-        Commands::Query(x) => query(args.globals, x)
+        Commands::Query(x) => queryer::exec(&args.globals, &x)
     }
 }
