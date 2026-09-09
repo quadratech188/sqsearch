@@ -24,40 +24,39 @@ type HistoryData = {
 	last_updated: number
 }
 
-function get_score(data: HistoryData): number {
-	return data.score * Math.exp(k * (Date.now() / 1000 - data.last_updated))
-}
-
-type SerializedHistory = [string, HistoryData][]
+type SerializedHistory = [number, HistoryData][]
 
 class History {
-	by_path: Map<string, HistoryData>
+	by_id: Map<number, HistoryData>
 
 	constructor(serialized: SerializedHistory) {
-		this.by_path = new Map()
+		this.by_id = new Map()
 
 		for (const [k, v] of serialized) {
-			this.by_path.set(k, v)
+			this.by_id.set(k, v)
 		}
 	}
-
 	serialize(): SerializedHistory {
-		return Array.from(this.by_path.entries())
+		return Array.from(this.by_id.entries())
 	}
+	score(id: number) {
+		let entry = this.by_id.get(id)
+		if (entry === undefined) return 0
 
-	select(path: string) {
-		let entry = this.by_path.get(path)
+		return entry.score * Math.exp(k * (Date.now() / 1000 - entry.last_updated))
+	}
+	select(id: number) {
 
-		this.by_path.set(path, {
-			score: 1 + (entry !== undefined? get_score(entry): 0),
+		this.by_id.set(id, {
+			score: 1 + this.score(id),
 			last_updated: Date.now() / 1000
 		})
 	}
 }
 
 class Result {
-	known_matches: [string, HistoryData][] = []
-	matches: string[] = []
+	known_matches: [number, string][] = []
+	matches: [number, string][] = []
 	history: History
 	dirty: boolean = true
 
@@ -65,24 +64,20 @@ class Result {
 		this.history = history
 	}
 
-	add(path: string) {
+	add(id: number, path: string) {
 		this.dirty = true
-		const entry = this.history.by_path.get(path)
-		if (entry === undefined) {
-			this.matches.push(path)
-			return
+
+		if (this.history.by_id.has(id)) {
+			this.known_matches.push([id, path])
+		} else {
+			this.matches.push([id, path])
 		}
-		this.known_matches.push([path, entry])
 	}
-
-	get_known_matches(): string[] {
+	sort_known_matches() {
 		this.known_matches.sort((x, y) => {
-			return get_score(y[1]) - get_score(x[1])
+			return this.history.score(y[0]) - this.history.score(x[0])
 		})
-
-		return this.known_matches.map(x => x[0])
 	}
-
 	clear() {
 		this.dirty = true
 		this.matches = []
@@ -99,7 +94,7 @@ function use_sqsearch(on_line: (line: string) => void):
 	const [error, set_error] = useState<null | string>(null)
 
 	useEffect(() => {
-		const instance = spawn('sqsearch', ['--db', db, 'query'])
+		const instance = spawn('sqsearch', ['--db', db, 'query', '--format', 'jsonl'])
 		proc_ref.current = instance
 
 		let stderr_buffer = ''
@@ -142,13 +137,14 @@ export default function SQSearch() {
 	const [count, set_count] = useState(default_count)
 
 	const [ui_results, set_ui_results] = useState({
-		known: [] as string[],
-		matches: [] as string[]
+		known: [] as [number, string][],
+		matches: [] as [number, string][]
 	})
 	const sync = () => {
 		if (!result_ref.current.dirty) return
+		result_ref.current.sort_known_matches()
 		set_ui_results({
-			known: result_ref.current.get_known_matches(),
+			known: [...result_ref.current.known_matches],
 			matches: [...result_ref.current.matches]
 		})
 		result_ref.current.dirty = false
@@ -168,23 +164,24 @@ export default function SQSearch() {
 	const active_query_ref = useRef('')
 
 	const [send_query, error] = use_sqsearch(line => {
-		if (line.startsWith('BEGIN')) {
-			active_query_ref.current = line.slice('BEGIN '.length)
+		const parsed = JSON.parse(line)
+
+		if (parsed.type == "Begin") {
+			active_query_ref.current = parsed.value
 			return
 		}
-		if (line.startsWith('END')) {
+		if (parsed.type == "End") {
 			active_query_ref.current = ''
 			sync()
 			return
 		}
-		if (line.startsWith('ERROR')) {
-			console.log(line)
+		if (parsed.type == "Error") {
+			console.log(parsed.value)
 			return
 		}
 		if (active_query_ref.current !== query_ref.current) return
 
-		const path = line.slice('ITEM '.length)
-		result_ref.current.add(path)
+		result_ref.current.add(parsed.value.id, parsed.value.path)
 	})
 
 	const {value: serialized_history, setValue: save_history, isLoading: loading}
@@ -210,7 +207,7 @@ export default function SQSearch() {
 		set_count(default_count)
 	}, [search_text])
 
-	const select = (x: string) => {
+	const select = (x: number) => {
 		history.select(x)
 		save_history(history.serialize())
 	}
@@ -235,9 +232,9 @@ export default function SQSearch() {
 		isLoading={loading}>
 		<List.Section title={`Seen before (${ui_results.known.length})`}>
 			{ui_results.known.map((path, index) => (
-			<FilePanel key={`${index}-${path}`}
-				path={`${prefix}/${path}`}
-				select={() => select(path)}
+			<FilePanel key={path[0]}
+				path={`${prefix}/${path[1]}`}
+				select={() => select(path[0])}
 				more_results={() => set_count(x => 2 * x)}
 				/>
 			))}
@@ -245,9 +242,9 @@ export default function SQSearch() {
 
 		<List.Section title={`Results (${ui_results.matches.length})`}>
 			{ui_results.matches.map((path, index) => (
-			<FilePanel key={`${index}-${path}`}
-				path={`${prefix}/${path}`}
-				select={() => select(path)}
+			<FilePanel key={path[0]}
+				path={`${prefix}/${path[1]}`}
+				select={() => select(path[0])}
 				more_results={() => set_count(x => 2 * x)}
 				/>
 			))}
