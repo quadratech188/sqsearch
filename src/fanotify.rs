@@ -17,6 +17,7 @@ pub enum EventType {
 pub struct Event<'a> {
     buf: &'a [u8],
     fid: usize,
+    pub is_dir: bool,
     pub r#type: EventType
 }
 
@@ -70,6 +71,7 @@ impl <'a> Event<'a> {
         (Event {
             buf: buf,
             fid: fid.expect("fanotify event missing fid"),
+            is_dir: metadata.mask & libc::FAN_ONDIR != 0,
             r#type: event_type
         }, event_len)
     }

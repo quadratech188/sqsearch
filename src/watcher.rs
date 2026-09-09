@@ -13,12 +13,14 @@ pub enum Event {
     Create {
         p_fh: FileHandle,
         fh: FileHandle,
-        name: OsString
+        name: OsString,
+        is_dir: bool
     },
     Delete {
         p_fh: FileHandle,
         fh: FileHandle,
-        name: OsString
+        name: OsString,
+        is_dir: bool
     },
     Rename {
         old_p_fh: FileHandle,
@@ -26,6 +28,7 @@ pub enum Event {
         fh: FileHandle,
         old_name: OsString,
         new_name: OsString,
+        is_dir: bool
     }
 }
 
@@ -36,7 +39,8 @@ pub enum Event {
 fn handle_move(
     tx: &rusqlite::Transaction,
     fh: &FileHan,
-    from: Option<(&OsStr, &FileHan)>, to: Option<(&OsStr, &FileHan)>
+    from: Option<(&OsStr, &FileHan)>, to: Option<(&OsStr, &FileHan)>,
+    is_dir: bool
 ) -> Result<(), db::Error> {
     // If we can't find the parent, pretend it doesn't exist (None)
     let get_ids = |(name, fh)| {
@@ -47,8 +51,16 @@ fn handle_move(
         }
     };
 
-    let mut from = from.map_or(Ok(None), get_ids)?;
-    let to = to.map_or(Ok(None), get_ids)?;
+    let from_id = from.map_or(Ok(None), get_ids)?;
+    let to_id = to.map_or(Ok(None), get_ids)?;
+
+    if is_dir && let (Some(_), None, Some(_), Some(_)) = (from, from_id, to, to_id) {
+        // This directory was moved from a parent dir we don't track to one we do
+        // TODO: We need to index its contents
+    }
+
+    let mut from = from_id;
+    let to = to_id;
 
     loop {
         let result = match (from, to) {
@@ -98,25 +110,28 @@ fn handle_events(conn: &mut rusqlite::Connection, events: &[Event])
 
     for event in events {
         match event {
-            Event::Create {p_fh, fh, name} => {
+            Event::Create {p_fh, fh, name, is_dir } => {
                 handle_move(
                     &tx, fh,
                     None,
-                    Some((name, p_fh))
+                    Some((name, p_fh)),
+                    *is_dir
                 )
             }
-            Event::Delete { p_fh, fh, name } => {
+            Event::Delete { p_fh, fh, name, is_dir } => {
                 handle_move(
                     &tx, fh,
                     Some((name, p_fh)),
-                    None
+                    None,
+                    *is_dir
                 )
             }
-            Event::Rename { old_p_fh, new_p_fh, fh, old_name, new_name } => {
+            Event::Rename { old_p_fh, new_p_fh, fh, old_name, new_name, is_dir } => {
                 handle_move(
                     &tx, fh,
                     Some((old_name, old_p_fh)),
                     Some((new_name, new_p_fh)),
+                    *is_dir
                 )
             }
         }?
@@ -189,19 +204,22 @@ fn process_fanotify_stream(
             fanotify::EventType::Create(dfid) => Event::Create {
                 p_fh: event.p_fh(dfid).to_owned(),
                 fh:   event.fh()      .to_owned(),
-                name: event.name(dfid).to_owned()
+                name: event.name(dfid).to_owned(),
+                is_dir: event.is_dir
             },
             fanotify::EventType::Delete(dfid) => Event::Delete {
                 p_fh: event.p_fh(dfid).to_owned(),
                 fh:   event.fh()      .to_owned(),
-                name: event.name(dfid).to_owned()
+                name: event.name(dfid).to_owned(),
+                is_dir: event.is_dir
             },
             fanotify::EventType::Rename(old_dfid, new_dfid) => Event::Rename {
                 old_p_fh: event.p_fh(old_dfid).to_owned(),
                 new_p_fh: event.p_fh(new_dfid).to_owned(),
                 fh:       event.fh()          .to_owned(),
                 old_name: event.name(old_dfid).to_owned(),
-                new_name: event.name(new_dfid).to_owned()
+                new_name: event.name(new_dfid).to_owned(),
+                is_dir: event.is_dir
             },
             fanotify::EventType::CreateDelete(_) => continue
         })?;
