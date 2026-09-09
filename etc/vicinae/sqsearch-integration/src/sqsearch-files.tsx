@@ -12,16 +12,21 @@ function load_prefs() {
 	// k = - (ln 2) / t
 	const k = - Math.log(2) / half_life
 	const default_count = Number(prefs['default-count'])
+	const history_len = Number(prefs['history-len'])
 
-	return [k, default_count, prefs['prefix'], prefs['db']]
+	return [k, default_count, history_len, prefs['prefix'], prefs['db']]
 }
 
-const [k, default_count, prefix, db] = load_prefs()
+const [k, default_count, history_len, prefix, db] = load_prefs()
 
 type HistoryData = {
 	score: number,
 	// In seconds (Date.now() / 1000)
 	last_updated: number
+}
+
+function get_score(data: HistoryData): number {
+       return data.score * Math.exp(k * (Date.now() / 1000 - data.last_updated))
 }
 
 type SerializedHistory = [number, HistoryData][]
@@ -30,6 +35,7 @@ class History {
 	by_id: Map<number, HistoryData>
 
 	constructor(serialized: SerializedHistory) {
+		console.log(serialized.length)
 		this.by_id = new Map()
 
 		for (const [k, v] of serialized) {
@@ -37,13 +43,15 @@ class History {
 		}
 	}
 	serialize(): SerializedHistory {
-		return Array.from(this.by_id.entries())
+		let serialized = Array.from(this.by_id.entries())
+		serialized.sort((x, y) => {return get_score(y[1]) - get_score(x[1])})
+		return serialized.slice(0, history_len)
 	}
 	score(id: number) {
 		let entry = this.by_id.get(id)
 		if (entry === undefined) return 0
 
-		return entry.score * Math.exp(k * (Date.now() / 1000 - entry.last_updated))
+		return get_score(entry)
 	}
 	select(id: number) {
 

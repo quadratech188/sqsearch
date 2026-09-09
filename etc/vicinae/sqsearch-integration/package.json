@@ -35,6 +35,14 @@
       "default": "128"
     },
     {
+      "name": "history-len",
+      "title": "Maximum history length",
+      "description": "Determines how many history entries are saved",
+      "required": true,
+      "type": "textfield",
+      "default": "256"
+    },
+    {
       "name": "prefix",
       "title": "Prefix",
       "description": "Location of indexed filesystem",
