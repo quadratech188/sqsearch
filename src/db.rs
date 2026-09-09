@@ -198,12 +198,18 @@ pub fn update(
     }
 }
 
+// row[0]: s0.id
+// row[1 ... segment_cnt]: s0.name ... s{segment_cnt - 1}.name
+// row[segment_cnt + 1]: s{segment_cnt - 1}.name
+
+pub fn query_row_id(tx: &rusqlite::Connection, row: &rusqlite::Row, segment_cnt: usize)
+-> Result<i64, Error> {
+    Ok(row.get(segment_cnt + 1)?)
+}
 
 pub fn get_path(tx: &rusqlite::Connection, row: &rusqlite::Row, segment_cnt: usize)
 -> Result<path::PathBuf, Error> {
 
-    // row[0]: s0.id
-    // row[1 ... segment_cnt]: s0.name ... s{segment_cnt - 1}.name
 
     let mut stmt = tx.prepare_cached("
         SELECT f.name, parent_id FROM files AS f WHERE f.id = ?1
@@ -289,13 +295,16 @@ pub fn prepare_query(segments: &[&str]) -> Option<(String, Vec<String>)> {
         }
     }
 
-    let mut query = String::from("SELECT DISTINCT s0.id, ");
+    let mut selects = vec![];
+    selects.push("s0.id".into());
+    for i in 0..segments.len() {
+        selects.push(format!("s{i}.name"));
+    }
+    selects.push(format!("s{}.id", segments.len() - 1));
 
-    query += &(0..segments.len())
-        .map(|x| format!("s{x}.name"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut query = String::from("SELECT DISTINCT ");
 
+    query += &selects.join(", ");
     query += " FROM ";
     query += &joins.join(" CROSS JOIN ");
     query += " WHERE ";

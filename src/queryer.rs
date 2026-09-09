@@ -1,10 +1,13 @@
 use std::{io, path, sync::mpsc, thread, time};
 
+use serde::Serialize;
+
 use crate::{GlobalArgs, db};
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug)]
 pub enum Format {
-    Paths
+    Paths,
+    Jsonl
 }
 
 #[derive(clap::Args, Clone, Debug)]
@@ -13,18 +16,44 @@ pub struct QueryArgs {
     format: Format
 }
 
+#[derive(Serialize)]
+#[serde(tag = "type", content = "value")]
+enum Line<'a> {
+    Begin(&'a str),
+    End(&'a str),
+    Item {id: i64, path: &'a path::Path},
+    Error(&'a str)
+}
+
 impl Format {
+    fn print_json(line: Line) {
+        serde_json::to_writer(io::stdout(), &line).unwrap();
+        println!()
+    }
+
     fn begin(&self, query: &str) {
-        println!("BEGIN {query}");
+        match self {
+            Format::Paths => println!("BEGIN {query}"),
+            Format::Jsonl => Self::print_json(Line::Begin(query))
+        }
     }
     fn end(&self, query: &str) {
-        println!("END {query}");
+        match self {
+            Format::Paths => println!("END {query}"),
+            Format::Jsonl => Self::print_json(Line::End(query))
+        }
     }
-    fn path(&self, path: &path::Path) {
-        println!("ITEM {}", path.display())
+    fn item(&self, id: i64, path: &path::Path) {
+        match self {
+            Format::Paths => println!("ITEM {}", path.display()),
+            Format::Jsonl => Self::print_json(Line::Item {id, path})
+        }
     }
     fn error(&self, error: &db::Error) {
-        println!("ERROR {error}")
+        match self {
+            Format::Paths => println!("ERROR {error}"),
+            Format::Jsonl => Self::print_json(Line::Error(&error.to_string()))
+        }
     }
 }
 
@@ -35,9 +64,11 @@ fn print_results(
     let mut cnt = 0;
     loop {
         let Some(row) = rows.next()? else {return Ok(cnt)};
-        let path = db::get_path(conn, row, row_length)?;
 
-        format.path(&path);
+        format.item(
+            db::query_row_id(conn, row, row_length)?,
+            &db::get_path(conn, row, row_length)?
+        );
 
         cnt += 1;
         if cnt == count {
