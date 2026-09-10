@@ -329,7 +329,7 @@ use super::*;
 
     fn make_fh(id: i64) -> FileHandle {
         const LEN: usize = 24;
-        const TOTAL_LEN: usize = size_of::<util::file_handle>() + LEN;
+        const TOTAL_LEN: usize = size_of::<libc::file_handle>() + LEN;
 
         let mut buf = [0; TOTAL_LEN];
 

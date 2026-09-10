@@ -12,8 +12,8 @@ pub struct FileHan([u8]);
 
 impl FileHan {
     pub fn read_from_buf(buf: &[u8]) -> Result<&Self, FileHandleInvalidError> {
-        let header: util::file_handle = util::read_as_type(buf);
-        let total_len = size_of::<util::file_handle>() + header.handle_bytes as usize;
+        let header: libc::file_handle = util::read_as_type(buf);
+        let total_len = size_of::<libc::file_handle>() + header.handle_bytes as usize;
 
         if total_len > buf.len() {
             return Err(FileHandleInvalidError)
@@ -62,12 +62,12 @@ pub trait FileHandleOps {
     fn buf(&self) -> &[u8];
 
     fn f_handle(&self) -> &[u8] {
-        &self.buf()[size_of::<util::file_handle>()..]
+        &self.buf()[size_of::<libc::file_handle>()..]
     }
 
     fn size(&self) -> usize {
-        let header: util::file_handle = util::read_as_type(self.buf());
-        size_of::<util::file_handle>() + header.handle_bytes as usize
+        let header: libc::file_handle = util::read_as_type(self.buf());
+        size_of::<libc::file_handle>() + header.handle_bytes as usize
     }
 }
 
