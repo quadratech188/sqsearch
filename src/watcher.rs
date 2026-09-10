@@ -264,47 +264,75 @@ impl FanotifyState {
                 ptr = 0;
             }
 
-            let (event, len) = fanotify::Event::from_slice(&buf[ptr..], self.discover_tid);
-            ptr += len;
+            let here = &buf[ptr..];
 
-            let Some(event) = event else {continue};
+            let metadata = fanotify::read_metadata(here);
+            ptr += metadata.event_len as usize;
 
-            if !self.filter.apply(event.fh()) {continue}
+            let stripped_mask = metadata.mask
+                & (libc::FAN_CREATE | libc::FAN_DELETE | libc::FAN_RENAME | libc::FAN_OPEN);
 
-            self.fanotify_tx.send(match event.r#type {
-                fanotify::EventType::Create(dfid) => Event::Create {
-                    p_fh: event.p_fh(dfid).to_owned(),
-                    fh:   event.fh()      .to_owned(),
-                    name: event.name(dfid).to_owned(),
-                    is_dir: event.is_dir
-                },
-                fanotify::EventType::Delete(dfid) => Event::Delete {
-                    p_fh: event.p_fh(dfid).to_owned(),
-                    fh:   event.fh()      .to_owned(),
-                    name: event.name(dfid).to_owned(),
-                    is_dir: event.is_dir
-                },
-                fanotify::EventType::Rename(old_dfid, new_dfid) => Event::Rename {
-                    old_p_fh: event.p_fh(old_dfid).to_owned(),
-                    new_p_fh: event.p_fh(new_dfid).to_owned(),
-                    fh:       event.fh()          .to_owned(),
-                    old_name: event.name(old_dfid).to_owned(),
-                    new_name: event.name(new_dfid).to_owned(),
-                    is_dir: event.is_dir
-                },
-                fanotify::EventType::CreateDelete(_) => continue,
-                fanotify::EventType::Discover => {
-                    let Some((p_fh, name)) = self.reconstructer.submit(event.fh())
-                        else {continue};
-                    Event::Discover {
-                        p_fh,
-                        fh: event.fh().to_owned(),
-                        name
-                    }
-                }
-            }).expect("Channel broken");
+            // Only allow FAN_OPENs by our discoverer
+            if stripped_mask == libc::FAN_OPEN && metadata.pid != self.discover_tid {continue}
+
+            // This has net zero effect
+            if stripped_mask == libc::FAN_CREATE | libc::FAN_DELETE {continue}
+
+            if stripped_mask & libc::FAN_CREATE != 0 {
+                let (fh, (p_fh, name))
+                    = fanotify::read_create_delete(here, &metadata);
+
+                if !self.filter.apply(fh) {continue}
+
+                self.fanotify_tx.send(Event::Create {
+                    p_fh  : p_fh.to_owned(),
+                    fh    : fh  .to_owned(),
+                    name  : name.to_owned(),
+                    is_dir: (metadata.mask & libc::FAN_ONDIR != 0)
+                }).expect("Channel broken");
+            }
+            if stripped_mask & libc::FAN_DELETE != 0 {
+                let (fh, (p_fh, name))
+                    = fanotify::read_create_delete(here, &metadata);
+
+                if !self.filter.apply(fh) {continue}
+
+                self.fanotify_tx.send(Event::Delete {
+                    p_fh  : p_fh.to_owned(),
+                    fh    : fh  .to_owned(),
+                    name  : name.to_owned(),
+                    is_dir: (metadata.mask & libc::FAN_ONDIR != 0)
+                }).expect("Channel broken");
+            }
+            if stripped_mask & libc::FAN_RENAME != 0 {
+                let (fh, (old_p_fh, old_name), (new_p_fh, new_name))
+                    = fanotify::read_rename(here, &metadata);
+
+                if !self.filter.apply(fh) {continue}
+
+                self.fanotify_tx.send(Event::Rename {
+                    old_p_fh: old_p_fh.to_owned(),
+                    new_p_fh: new_p_fh.to_owned(),
+                    fh:       fh      .to_owned(),
+                    old_name: old_name.to_owned(),
+                    new_name: new_name.to_owned(),
+                    is_dir: (metadata.mask & libc::FAN_ONDIR != 0)
+                }).expect("Channel broken");
+            }
+            if stripped_mask == libc::FAN_OPEN {
+                let fh = fanotify::read_open(here, &metadata);
+
+                let Some((p_fh, name)) = self.reconstructer.submit(fh) else {continue};
+
+                if !self.filter.apply(fh) {continue}
+
+                self.fanotify_tx.send(Event::Discover {
+                    p_fh,
+                    fh: fh.to_owned(),
+                    name
+                }).expect("Channel broken");
+            }
         }
-
     }
 }
 
