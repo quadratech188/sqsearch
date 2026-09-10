@@ -3,7 +3,7 @@ use std::path;
 use crate::{file_handle::{FileHan, FileHandleOps}, util};
 
 #[derive(clap::Args, Debug, Clone)]
-pub struct WatchPathArgs {
+pub struct FilterArgs {
     /// Any path within the filesystem / subvolume you want to watch
     path: path::PathBuf,
 
@@ -13,22 +13,14 @@ pub struct WatchPathArgs {
 }
 
 #[derive(Debug)]
-pub enum Filter {
-    None,
-    Subvol {
-        root_objectid: u64
-    }
+pub struct Filter {
+    btrfs_subvol: Option<u64>
 }
 
-
 impl Filter {
-    pub fn apply(&self, handle: &FileHan) -> bool {
-        match self {
-            Filter::None => true,
-            Filter::Subvol { root_objectid } => {
-                get_root_objectid(handle) == *root_objectid
-            }
-        }
+    pub fn allow(&self, handle: &FileHan) -> bool {
+        let Some(root_objectid) = self.btrfs_subvol else {return true};
+        get_root_objectid(handle) == root_objectid
     }
 }
 
@@ -49,10 +41,10 @@ fn get_root_objectid(handle: &FileHan) -> u64 {
     fid.root_objectid
 }
 
-pub fn prepare_fanotify(args: &WatchPathArgs)
+pub fn prepare_fanotify(args: &FilterArgs)
 -> Result<(path::PathBuf, Filter), anyhow::Error> {
     let Some(ref btrfs_root) = args.btrfs_root else {
-        return Ok((args.path.clone(), Filter::None))
+        return Ok((args.path.clone(), Filter {btrfs_subvol: None}))
     };
 
     let (_, child_fh) = util::get_fh(&args.path)?;
@@ -66,5 +58,5 @@ pub fn prepare_fanotify(args: &WatchPathArgs)
     }
     */
 
-    Ok((btrfs_root.clone(), Filter::Subvol { root_objectid: get_root_objectid(&child_fh) }))
+    Ok((btrfs_root.clone(), Filter {btrfs_subvol: Some(get_root_objectid(&child_fh))}))
 }

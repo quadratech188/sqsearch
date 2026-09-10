@@ -1,11 +1,11 @@
 use std::{ffi::{self, OsStr, OsString}, fs, io::{self, Read}, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, sync::mpsc, thread, time};
 
-use crate::{GlobalArgs, db, discoverer, fanotify, file_handle::{FileHan, FileHandle}, watchpath};
+use crate::{GlobalArgs, db, discoverer, fanotify, file_handle::{FileHan, FileHandle}, filter};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct WatchArgs {
     #[command(flatten)]
-    watch_path: watchpath::WatchPathArgs
+    watch_path: filter::FilterArgs
 }
 
 #[derive(Clone, Debug)]
@@ -246,7 +246,7 @@ fn create_fanotify_stream(path: &path::Path) -> anyhow::Result<fs::File> {
 
 struct FanotifyState {
     stream: fs::File,
-    filter: watchpath::Filter,
+    filter: filter::Filter,
     fanotify_tx: mpsc::Sender<Event>,
 
     reconstructer: discoverer::Reconstructer,
@@ -282,7 +282,7 @@ impl FanotifyState {
                 let (fh, (p_fh, name))
                     = fanotify::read_create_delete(here, &metadata);
 
-                if !self.filter.apply(fh) {continue}
+                if !self.filter.allow(fh) {continue}
 
                 self.fanotify_tx.send(Event::Create {
                     p_fh  : p_fh.to_owned(),
@@ -295,7 +295,7 @@ impl FanotifyState {
                 let (fh, (p_fh, name))
                     = fanotify::read_create_delete(here, &metadata);
 
-                if !self.filter.apply(fh) {continue}
+                if !self.filter.allow(fh) {continue}
 
                 self.fanotify_tx.send(Event::Delete {
                     p_fh  : p_fh.to_owned(),
@@ -308,7 +308,7 @@ impl FanotifyState {
                 let (fh, (old_p_fh, old_name), (new_p_fh, new_name))
                     = fanotify::read_rename(here, &metadata);
 
-                if !self.filter.apply(fh) {continue}
+                if !self.filter.allow(fh) {continue}
 
                 self.fanotify_tx.send(Event::Rename {
                     old_p_fh: old_p_fh.to_owned(),
@@ -324,7 +324,7 @@ impl FanotifyState {
 
                 let Some((p_fh, name)) = self.reconstructer.submit(fh) else {continue};
 
-                if !self.filter.apply(fh) {continue}
+                if !self.filter.allow(fh) {continue}
 
                 self.fanotify_tx.send(Event::Discover {
                     p_fh,
@@ -343,7 +343,7 @@ pub fn exec(globals: &GlobalArgs, args: &WatchArgs) -> anyhow::Result<()> {
     )?;
     db::prepare_db(&mut conn)?;
 
-    let (path, filter) = watchpath::prepare_fanotify(&args.watch_path)?;
+    let (path, filter) = filter::prepare_fanotify(&args.watch_path)?;
     let mount_fd = fs::File::open(&path)?;
 
     let (fanotify_tx, fanotify_rx) = mpsc::channel();

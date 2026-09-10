@@ -11,7 +11,7 @@ mod indexer;
 mod queryer;
 mod util;
 mod watcher;
-mod watchpath;
+mod filter;
 
 #[derive(clap::Parser, Debug)]
 struct CLI {
