@@ -3,11 +3,12 @@ use std::path;
 use clap::Parser;
 
 mod db;
+mod discoverer;
 mod fanotify;
 mod file_handle;
+mod gen_suffixes_vtab;
 mod indexer;
 mod queryer;
-mod gen_suffixes_vtab;
 mod util;
 mod watcher;
 mod watchpath;

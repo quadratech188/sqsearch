@@ -202,7 +202,7 @@ pub fn update(
 // row[1 ... segment_cnt]: s0.name ... s{segment_cnt - 1}.name
 // row[segment_cnt + 1]: s{segment_cnt - 1}.name
 
-pub fn query_row_id(tx: &rusqlite::Connection, row: &rusqlite::Row, segment_cnt: usize)
+pub fn query_row_id(_tx: &rusqlite::Connection, row: &rusqlite::Row, segment_cnt: usize)
 -> Result<i64, Error> {
     Ok(row.get(segment_cnt + 1)?)
 }

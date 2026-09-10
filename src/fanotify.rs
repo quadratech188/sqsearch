@@ -12,6 +12,7 @@ pub enum EventType {
     // We can't figure out which came first. but for a file DB, it doesn't matter!
     #[allow(unused)]
     CreateDelete(usize),
+    Discover
 }
 
 pub struct Event<'a> {
@@ -22,11 +23,22 @@ pub struct Event<'a> {
 }
 
 impl <'a> Event<'a> {
-    pub fn from_slice(buf: &'a [u8]) -> (Self, usize) {
+    pub fn from_slice(buf: &'a [u8], open_tid: libc::pid_t) -> (Option<Self>, usize) {
         let metadata: libc::fanotify_event_metadata = util::read_as_type(buf);
         let event_len = metadata.event_len as usize;
 
-        let mut ptr = size_of::<libc::fanotify_event_metadata>();
+        let mut stripped_mask = metadata.mask
+            & (libc::FAN_CREATE | libc::FAN_DELETE | libc::FAN_RENAME | libc::FAN_OPEN);
+
+        if stripped_mask == libc::FAN_OPEN && metadata.pid != open_tid {return (None, event_len)}
+
+        // Delete the FAN_OPEN bit to make the below match statement work
+        // Yes it's ugly, I know
+        if stripped_mask != libc::FAN_OPEN {
+            stripped_mask &= !libc::FAN_OPEN
+        }
+
+        let mut ptr = metadata.metadata_len as usize;
 
         let mut fid = None;
         let mut dfid = None;
@@ -45,7 +57,6 @@ impl <'a> Event<'a> {
             ptr += header.len as usize;
         }
 
-        let stripped_mask = metadata.mask & (libc::FAN_CREATE | libc::FAN_DELETE | libc::FAN_RENAME);
 
         // Using | for 'matches both' makes sense
         // but why do you keep doing that EVEN WHEN I PUT THE WHOLE THING IN PARENTHESIS???
@@ -65,15 +76,22 @@ impl <'a> Event<'a> {
             CREATE_AND_DELETE => EventType::CreateDelete(
                 dfid.expect("fanotify create & delete event missing dfid")
             ),
+            libc::FAN_OPEN => {
+                if metadata.mask & libc::FAN_ONDIR != 0 {
+                    // In this case, we get a DFID_NAME(fid, '.') for some reason
+                    fid = dfid
+                }
+                EventType::Discover
+            },
             _ => panic!("Unexpected fanotify metadata mask: {}", metadata.mask)
         };
 
-        (Event {
+        (Some(Event {
             buf: buf,
             fid: fid.expect("fanotify event missing fid"),
             is_dir: metadata.mask & libc::FAN_ONDIR != 0,
             r#type: event_type
-        }, event_len)
+        }), event_len)
     }
 }
 
