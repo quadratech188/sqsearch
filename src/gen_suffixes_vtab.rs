@@ -7,7 +7,7 @@ pub struct SuffixesVtab {
     base: rusqlite::vtab::sqlite3_vtab
 }
 
-const COLUMN_SUFFIX: ffi::c_int = 0;
+const _COLUMN_SUFFIX: ffi::c_int = 0;
 const COLUMN_STRING: ffi::c_int = 1;
 
 unsafe impl rusqlite::vtab::VTab<'_> for SuffixesVtab {
