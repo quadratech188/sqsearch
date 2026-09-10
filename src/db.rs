@@ -317,7 +317,7 @@ pub fn prepare_query(segments: &[&str]) -> Option<(String, Vec<String>)> {
 mod tests {
     use std::ops::Deref;
 
-use crate::{file_handle::FileHandle, util};
+use crate::{file_handle::FileHandle};
 
 use super::*;
 
@@ -443,7 +443,7 @@ use super::*;
         assert_eq!(
             query,
             [
-                "SELECT DISTINCT s0.id, s0.name, s1.name, s2.name FROM suffix_array",
+                "SELECT DISTINCT s0.id, s0.name, s1.name, s2.name, s2.id FROM suffix_array",
                 "CROSS JOIN files AS s1",
                 "CROSS JOIN files AS s0",
                 "CROSS JOIN files AS s2 WHERE",
