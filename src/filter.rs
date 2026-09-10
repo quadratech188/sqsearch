@@ -1,16 +1,6 @@
-use std::path;
+use std::{io, path};
 
 use crate::{file_handle::{FileHan, FileHandleOps}, util};
-
-#[derive(clap::Args, Debug, Clone)]
-pub struct FilterArgs {
-    /// Any path within the filesystem / subvolume you want to watch
-    path: path::PathBuf,
-
-    /// If watching a BTRFS subvolume, mount point of the root subvolume.
-    #[arg(long)]
-    btrfs_root: Option<path::PathBuf>
-}
 
 #[derive(Debug)]
 pub struct Filter {
@@ -18,6 +8,17 @@ pub struct Filter {
 }
 
 impl Filter {
+    pub fn new() -> Self {
+        Self {
+            btrfs_subvol: None
+        }
+    }
+    pub fn add_btrfs_subvol(&mut self, subvol: &path::Path) -> io::Result<()> {
+        self.btrfs_subvol = Some(
+            get_root_objectid(&util::get_fh(subvol)?.1)
+        );
+        Ok(())
+    }
     pub fn allow(&self, handle: &FileHan) -> bool {
         let Some(root_objectid) = self.btrfs_subvol else {return true};
         get_root_objectid(handle) == root_objectid
@@ -39,24 +40,4 @@ struct btrfs_fid_header {
 fn get_root_objectid(handle: &FileHan) -> u64 {
     let fid: btrfs_fid_header = util::read_as_type(handle.f_handle());
     fid.root_objectid
-}
-
-pub fn prepare_fanotify(args: &FilterArgs)
--> Result<(path::PathBuf, Filter), anyhow::Error> {
-    let Some(ref btrfs_root) = args.btrfs_root else {
-        return Ok((args.path.clone(), Filter {btrfs_subvol: None}))
-    };
-
-    let (_, child_fh) = util::get_fh(&args.path)?;
-    let (_, _root_fh) = util::get_fh(&btrfs_root)?;
-
-    // TODO: Reimplement fsid checking
-
-    /*
-    if get_root_objectid(&child_fh) != get_root_objectid(&root_fh) {
-        anyhow::bail!("Provided path and btrfs_root don't belong to the same BTRFS filesystem");
-    }
-    */
-
-    Ok((btrfs_root.clone(), Filter {btrfs_subvol: Some(get_root_objectid(&child_fh))}))
 }

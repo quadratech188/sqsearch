@@ -4,8 +4,12 @@ use crate::{GlobalArgs, db, discoverer, fanotify, file_handle::{FileHan, FileHan
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct WatchArgs {
-    #[command(flatten)]
-    watch_path: filter::FilterArgs
+    /// Any path within the filesystem / subvolume you want to watch
+    path: path::PathBuf,
+
+    /// If watching a BTRFS subvolume, mount point of the root subvolume.
+    #[arg(long)]
+    btrfs_root: Option<path::PathBuf>
 }
 
 #[derive(Clone, Debug)]
@@ -343,11 +347,16 @@ pub fn exec(globals: &GlobalArgs, args: &WatchArgs) -> anyhow::Result<()> {
     )?;
     db::prepare_db(&mut conn)?;
 
-    let (path, filter) = filter::prepare_fanotify(&args.watch_path)?;
-    let mount_fd = fs::File::open(&path)?;
+    let fanotify_path = args.btrfs_root.as_ref().unwrap_or(&args.path);
+    let mount_fd = fs::File::open(fanotify_path)?;
+    let stream = create_fanotify_stream(fanotify_path)?;
 
     let (fanotify_tx, fanotify_rx) = mpsc::channel();
-    let stream = create_fanotify_stream(&path)?;
+
+    let mut filter = filter::Filter::new();
+    if let Some(path) = &args.btrfs_root {
+        filter.add_btrfs_subvol(&path)?;
+    }
 
     let (reconstructer, discover_tx, discover_tid)
         = discoverer::Reconstructer::launch(mount_fd);
