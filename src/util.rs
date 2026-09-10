@@ -14,11 +14,14 @@ pub fn get_fh(path: &path::Path) -> Result<(libc::c_int, FileHandle), io::Error>
 
     let mut mount_id = 0;
     let mut buf = vec![0; libc::MAX_HANDLE_SZ as usize];
+    let fh_ptr = buf.as_mut_ptr() as *mut libc::file_handle;
+    unsafe {(*fh_ptr).handle_bytes = libc::MAX_HANDLE_SZ as u32};
+
 
     let ret = unsafe {libc::name_to_handle_at(
         libc::AT_FDCWD,
         pathname.as_ptr(),
-        buf.as_mut_ptr() as *mut libc::file_handle,
+        fh_ptr,
         &mut mount_id,
         libc::AT_HANDLE_FID
     )};
