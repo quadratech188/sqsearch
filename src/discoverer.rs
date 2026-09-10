@@ -98,10 +98,13 @@ fn walk(current: i32, hints_log: &mpsc::Sender<Hints>) -> Result<(), io::Error> 
         )};
 
         if child == -1 {
-            return match io::Error::last_os_error().raw_os_error().unwrap() {
-                libc::ENOENT => Ok(()),
-                libc::ELOOP => Ok(()),
-                _ => Err(io::Error::last_os_error())
+            match io::Error::last_os_error().raw_os_error().unwrap() {
+                libc::ENOENT => continue,
+                libc::ELOOP => continue,
+                _ => {
+                    unsafe {libc::close(current)};
+                    return Err(io::Error::last_os_error())
+                }
             }
         }
 
