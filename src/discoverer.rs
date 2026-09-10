@@ -24,7 +24,7 @@ pub struct Reconstructer {
 }
 
 impl Reconstructer {
-    pub fn new(mount_fd: fs::File) -> (Self, mpsc::Sender<FileHandle>, libc::pid_t) {
+    pub fn launch(mount_fd: fs::File) -> (Self, mpsc::Sender<FileHandle>, libc::pid_t) {
         let (request_tx, request_rx) = mpsc::channel::<FileHandle>();
         let (hints_tx, hints_rx) = mpsc::channel();
         let (tid_tx, tid_rx) = mpsc::channel();

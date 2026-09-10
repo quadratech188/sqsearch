@@ -113,12 +113,8 @@ fn handle_move(
     Ok(())
 }
 
-fn handle_discover(
-    tx: &rusqlite::Transaction,
-    p_fh: &FileHan,
-    fh: &FileHan,
-    name: &OsStr
-) -> Result<(), db::Error> {
+fn handle_discover(tx: &rusqlite::Transaction, p_fh: &FileHan, fh: &FileHan, name: &OsStr)
+-> Result<(), db::Error> {
     let p_id = db::get_dir_id(tx, p_fh)?;
 
     match db::create(tx, fh, name, p_id) {
@@ -128,55 +124,81 @@ fn handle_discover(
     }
 }
 
-fn handle_events(
-    conn: &mut rusqlite::Connection,
-    discover_tx: &mpsc::Sender<FileHandle>,
-    events: &[Event]
-) -> Result<(), db::Error> {
-    let tx = conn.transaction()?;
+struct DbState {
+    conn: rusqlite::Connection,
+    fanotify_rx: mpsc::Receiver<Event>,
+    discover_tx: mpsc::Sender<FileHandle>
+}
 
-    for event in events {
-        match event {
-            Event::Create {p_fh, fh, name, is_dir } => {
-                handle_move(
-                    &tx, discover_tx,
-                    fh,
-                    None,
-                    Some((name, p_fh)),
-                    *is_dir
-                )
-            }
-            Event::Delete { p_fh, fh, name, is_dir } => {
-                handle_move(
-                    &tx, discover_tx,
-                    fh,
-                    Some((name, p_fh)),
-                    None,
-                    *is_dir
-                )
-            }
-            Event::Rename { old_p_fh, new_p_fh, fh, old_name, new_name, is_dir } => {
-                handle_move(
-                    &tx, discover_tx,
-                    fh,
-                    Some((old_name, old_p_fh)),
-                    Some((new_name, new_p_fh)),
-                    *is_dir
-                )
-            }
-            Event::Discover { p_fh, fh, name } => {
-                handle_discover(
-                    &tx,
-                    p_fh,
-                    fh,
-                    name
-                )
-            }
-        }?
+impl DbState {
+    fn handle_events(&mut self, events: &[Event]) -> Result<(), db::Error> {
+        let tx = self.conn.transaction()?;
+
+        for event in events {
+            match event {
+                Event::Create {p_fh, fh, name, is_dir } => {
+                    handle_move(
+                        &tx, &self.discover_tx,
+                        fh,
+                        None,
+                        Some((name, p_fh)),
+                        *is_dir
+                    )
+                }
+                Event::Delete { p_fh, fh, name, is_dir } => {
+                    handle_move(
+                        &tx, &self.discover_tx,
+                        fh,
+                        Some((name, p_fh)),
+                        None,
+                        *is_dir
+                    )
+                }
+                Event::Rename { old_p_fh, new_p_fh, fh, old_name, new_name, is_dir } => {
+                    handle_move(
+                        &tx, &self.discover_tx,
+                        fh,
+                        Some((old_name, old_p_fh)),
+                        Some((new_name, new_p_fh)),
+                        *is_dir
+                    )
+                }
+                Event::Discover { p_fh, fh, name } => {
+                    handle_discover(&tx, p_fh, fh, name)
+                }
+            }?
+        }
+
+        tx.commit()?;
+        Ok(())
     }
+    fn run(&mut self) -> Result<(), db::Error> {
+        let debounce_duration = time::Duration::from_millis(100);
+        let mut debounce_queue = vec![];
 
-    tx.commit()?;
-    Ok(())
+        loop {
+            let first = self.fanotify_rx.recv().unwrap();
+
+            debounce_queue.push(first);
+
+            loop {
+                let msg = match self.fanotify_rx.recv_timeout(debounce_duration) {
+                    Ok(x) => x,
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    _ => panic!()
+                };
+
+                debounce_queue.push(msg);
+            }
+
+            log::debug!("Writing {} event(s) to DB", debounce_queue.len());
+            match self.handle_events(&debounce_queue) {
+                Ok(()) => log::debug!("Wrote {} event(s) to DB", debounce_queue.len()),
+                Err(e) => log::warn!("{}", e)
+            }
+            debounce_queue.clear();
+        }
+    }
 }
 
 fn create_fanotify_stream(path: &path::Path) -> anyhow::Result<fs::File> {
@@ -222,104 +244,67 @@ fn create_fanotify_stream(path: &path::Path) -> anyhow::Result<fs::File> {
     Ok(unsafe {fs::File::from_raw_fd(fd)})
 }
 
-fn process_fanotify_stream(
-    mut stream: fs::File,
+struct FanotifyState {
+    stream: fs::File,
     filter: watchpath::Filter,
-    mut reconstructer: discoverer::Reconstructer, tid: libc::pid_t,
-    tx: mpsc::Sender<Event>
-) -> anyhow::Result<()> {
-    let mut buf = [0; 1024 * 1024];
-    let mut ptr = 0;
-    let mut len = 0;
-    loop {
-        if ptr >= len {
-            len = stream.read(&mut buf)?;
-            ptr = 0;
-        }
+    fanotify_tx: mpsc::Sender<Event>,
 
-        let (event, len) = fanotify::Event::from_slice(&buf[ptr..], tid);
-        ptr += len;
-
-        let Some(event) = event else {continue};
-
-        if !filter.apply(event.fh()) {continue}
-
-        tx.send(match event.r#type {
-            fanotify::EventType::Create(dfid) => Event::Create {
-                p_fh: event.p_fh(dfid).to_owned(),
-                fh:   event.fh()      .to_owned(),
-                name: event.name(dfid).to_owned(),
-                is_dir: event.is_dir
-            },
-            fanotify::EventType::Delete(dfid) => Event::Delete {
-                p_fh: event.p_fh(dfid).to_owned(),
-                fh:   event.fh()      .to_owned(),
-                name: event.name(dfid).to_owned(),
-                is_dir: event.is_dir
-            },
-            fanotify::EventType::Rename(old_dfid, new_dfid) => Event::Rename {
-                old_p_fh: event.p_fh(old_dfid).to_owned(),
-                new_p_fh: event.p_fh(new_dfid).to_owned(),
-                fh:       event.fh()          .to_owned(),
-                old_name: event.name(old_dfid).to_owned(),
-                new_name: event.name(new_dfid).to_owned(),
-                is_dir: event.is_dir
-            },
-            fanotify::EventType::CreateDelete(_) => continue,
-            fanotify::EventType::Discover => {
-                let Some((p_fh, name)) = reconstructer.submit(event.fh()) else {continue};
-                Event::Discover {
-                    p_fh,
-                    fh: event.fh().to_owned(),
-                    name
-                }
-            }
-        })?;
-    }
+    reconstructer: discoverer::Reconstructer,
+    discover_tid: libc::pid_t
 }
 
-fn watch(path: &path::Path, filter: watchpath::Filter, conn: &mut rusqlite::Connection)
--> anyhow::Result<()> {
-
-    let mount_fd = fs::File::open(path)?;
-
-    let (reconstructer, discover_tx, tid) = discoverer::Reconstructer::new(mount_fd);
-
-    let (fanotify_tx, fanotify_rx) = mpsc::channel();
-    let fanotify_stream = create_fanotify_stream(path)?;
-
-    let _watch_thread = thread::spawn(move || {
-        if let Err(e) = process_fanotify_stream(
-                fanotify_stream, filter, reconstructer, tid, fanotify_tx
-            ) {
-            panic!("{:?}", e)
-        }
-    });
-
-    let debounce_duration = time::Duration::from_millis(100);
-    let mut debounce_queue = vec![];
-
-    loop {
-        let first = fanotify_rx.recv().unwrap();
-
-        debounce_queue.push(first);
-
+impl FanotifyState {
+    fn run(&mut self) -> Result<(), io::Error> {
+        let mut buf = [0; 1024 * 1024];
+        let mut ptr = 0;
+        let mut len = 0;
         loop {
-            let msg = match fanotify_rx.recv_timeout(debounce_duration) {
-                Ok(x) => x,
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                _ => panic!()
-            };
+            if ptr >= len {
+                len = self.stream.read(&mut buf)?;
+                ptr = 0;
+            }
 
-            debounce_queue.push(msg);
+            let (event, len) = fanotify::Event::from_slice(&buf[ptr..], self.discover_tid);
+            ptr += len;
+
+            let Some(event) = event else {continue};
+
+            if !self.filter.apply(event.fh()) {continue}
+
+            self.fanotify_tx.send(match event.r#type {
+                fanotify::EventType::Create(dfid) => Event::Create {
+                    p_fh: event.p_fh(dfid).to_owned(),
+                    fh:   event.fh()      .to_owned(),
+                    name: event.name(dfid).to_owned(),
+                    is_dir: event.is_dir
+                },
+                fanotify::EventType::Delete(dfid) => Event::Delete {
+                    p_fh: event.p_fh(dfid).to_owned(),
+                    fh:   event.fh()      .to_owned(),
+                    name: event.name(dfid).to_owned(),
+                    is_dir: event.is_dir
+                },
+                fanotify::EventType::Rename(old_dfid, new_dfid) => Event::Rename {
+                    old_p_fh: event.p_fh(old_dfid).to_owned(),
+                    new_p_fh: event.p_fh(new_dfid).to_owned(),
+                    fh:       event.fh()          .to_owned(),
+                    old_name: event.name(old_dfid).to_owned(),
+                    new_name: event.name(new_dfid).to_owned(),
+                    is_dir: event.is_dir
+                },
+                fanotify::EventType::CreateDelete(_) => continue,
+                fanotify::EventType::Discover => {
+                    let Some((p_fh, name)) = self.reconstructer.submit(event.fh())
+                        else {continue};
+                    Event::Discover {
+                        p_fh,
+                        fh: event.fh().to_owned(),
+                        name
+                    }
+                }
+            }).expect("Channel broken");
         }
 
-        log::debug!("Writing {} event(s) to DB", debounce_queue.len());
-        match handle_events(conn, &discover_tx, &debounce_queue) {
-            Ok(()) => log::debug!("Wrote {} event(s) to DB", debounce_queue.len()),
-            Err(e) => log::warn!("{}", e)
-        }
-        debounce_queue.clear();
     }
 }
 
@@ -328,11 +313,37 @@ pub fn exec(globals: &GlobalArgs, args: &WatchArgs) -> anyhow::Result<()> {
         &globals.db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
     )?;
-
     db::prepare_db(&mut conn)?;
 
     let (path, filter) = watchpath::prepare_fanotify(&args.watch_path)?;
+    let mount_fd = fs::File::open(&path)?;
 
-    watch(&path, filter, &mut conn)?;
+    let (fanotify_tx, fanotify_rx) = mpsc::channel();
+    let stream = create_fanotify_stream(&path)?;
+
+    let (reconstructer, discover_tx, discover_tid)
+        = discoverer::Reconstructer::launch(mount_fd);
+
+    let mut fanotify_state = FanotifyState {
+        stream,
+        filter,
+        fanotify_tx,
+        reconstructer,
+        discover_tid
+    };
+
+    let _ = thread::spawn(move || {
+        if let Err(e) = fanotify_state.run() {
+            panic!("{:?}", e)
+        }
+    });
+
+    let mut db_state = DbState {
+        conn,
+        fanotify_rx,
+        discover_tx
+    };
+
+    db_state.run()?;
     Ok(())
 }
