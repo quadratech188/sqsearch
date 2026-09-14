@@ -1,11 +1,17 @@
 use std::{ffi::{self, OsStr, OsString}, fs, io::{self, Read}, ops::Deref, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, sync::mpsc, thread, time};
 
+use anyhow::Context;
+
 use crate::{GlobalArgs, db, discoverer, fanotify, file_handle::{FileHan, FileHandle}, filter};
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct WatchArgs {
     /// Any path within the filesystem / subvolume you want to watch
     path: path::PathBuf,
+
+    /// Path to filters file
+    #[arg(long, default_value = "/etc/sqsearch-filters.conf")]
+    filters: path::PathBuf,
 
     /// If watching a BTRFS subvolume, mount point of the root subvolume.
     #[arg(long)]
@@ -261,7 +267,7 @@ impl FanotifyState {
                 let (fh, new)
                     = fanotify::read_create_delete(here, &metadata);
 
-                if !self.filter.allow(fh) {continue}
+                if !self.filter.allow(fh, Some(new)) {continue}
 
                 self.fanotify_tx.send(Event::Alter {
                     old_dirent: None,
@@ -274,7 +280,7 @@ impl FanotifyState {
                 let (fh, old)
                     = fanotify::read_create_delete(here, &metadata);
 
-                if !self.filter.allow(fh) {continue}
+                if !self.filter.allow(fh, Some(old)) {continue}
 
                 self.fanotify_tx.send(Event::Alter {
                     old_dirent: Some((old.0.to_owned(), old.1.to_owned())),
@@ -289,8 +295,8 @@ impl FanotifyState {
 
                 let mut old = Some(old);
                 let mut new = Some(new);
-                if !self.filter.allow(fh) {old = None}
-                if !self.filter.allow(fh) {new = None}
+                if !self.filter.allow(fh, old) {old = None}
+                if !self.filter.allow(fh, new) {new = None}
 
                 if let None = old && let None = new {continue}
 
@@ -306,7 +312,7 @@ impl FanotifyState {
 
                 let Some(new) = self.reconstructer.submit(fh) else {continue};
 
-                if !self.filter.allow(fh) {continue}
+                if !self.filter.allow(fh, Some((&new.0, &new.1))) {continue}
 
                 self.fanotify_tx.send(Event::Discover {
                     p_fh: new.0,
@@ -319,22 +325,23 @@ impl FanotifyState {
 }
 
 pub fn exec(globals: &GlobalArgs, args: &WatchArgs) -> anyhow::Result<()> {
+    let mut filter = filter::Filter::load(&args.filters)
+        .context("Failed to load config file")?;
+    if let Some(_) = &args.btrfs_root {
+        filter.add_btrfs_subvol(&args.path)?;
+    }
+
+    let fanotify_path = args.btrfs_root.as_ref().unwrap_or(&args.path);
+    let mount_fd = fs::File::open(fanotify_path)?;
+    let stream = create_fanotify_stream(fanotify_path)?;
+
     let mut conn = rusqlite::Connection::open_with_flags(
         &globals.db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
     )?;
     db::prepare_db(&mut conn)?;
 
-    let fanotify_path = args.btrfs_root.as_ref().unwrap_or(&args.path);
-    let mount_fd = fs::File::open(fanotify_path)?;
-    let stream = create_fanotify_stream(fanotify_path)?;
-
     let (fanotify_tx, fanotify_rx) = mpsc::channel();
-
-    let mut filter = filter::Filter::new();
-    if let Some(_) = &args.btrfs_root {
-        filter.add_btrfs_subvol(&args.path)?;
-    }
 
     let (reconstructer, discover_tx, discover_tid)
         = discoverer::Reconstructer::launch(mount_fd);

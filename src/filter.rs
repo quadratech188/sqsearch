@@ -1,17 +1,27 @@
-use std::{io, path};
+use std::{collections::HashSet, ffi::{OsStr, OsString}, fs, io, path};
 
 use crate::{file_handle::{FileHan, FileHandleOps}, util};
 
+#[derive(serde::Deserialize)]
+struct Config {
+    ignores: Vec<String>
+}
+
 #[derive(Debug)]
 pub struct Filter {
+    ignores: HashSet<OsString>,
     btrfs_subvol: Option<u64>
 }
 
 impl Filter {
-    pub fn new() -> Self {
-        Self {
+    pub fn load(p: &path::Path) -> anyhow::Result<Self> {
+        let config = fs::read(p)?;
+        let config: Config = toml::from_slice(&config)?;
+
+        Ok(Self {
+            ignores: config.ignores.iter().map(|x| OsString::from(x)).collect(),
             btrfs_subvol: None
-        }
+        })
     }
     pub fn add_btrfs_subvol(&mut self, subvol: &path::Path) -> io::Result<()> {
         self.btrfs_subvol = Some(
@@ -19,9 +29,16 @@ impl Filter {
         );
         Ok(())
     }
-    pub fn allow(&self, handle: &FileHan) -> bool {
-        let Some(root_objectid) = self.btrfs_subvol else {return true};
-        get_root_objectid(handle) == root_objectid
+    pub fn allow(&self, fh: &FileHan, p: Option<(&FileHan, &OsStr)>) -> bool {
+        if let Some(root_objectid) = self.btrfs_subvol {
+            if get_root_objectid(fh) != root_objectid {return false}
+        }
+
+        if let Some((_p_fh, name)) = p {
+            if self.ignores.contains(name) {return false}
+        }
+
+        true
     }
 }
 
