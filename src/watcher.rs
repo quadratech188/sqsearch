@@ -354,8 +354,8 @@ pub fn exec(globals: &GlobalArgs, args: &WatchArgs) -> anyhow::Result<()> {
     let (fanotify_tx, fanotify_rx) = mpsc::channel();
 
     let mut filter = filter::Filter::new();
-    if let Some(path) = &args.btrfs_root {
-        filter.add_btrfs_subvol(&path)?;
+    if let Some(_) = &args.btrfs_root {
+        filter.add_btrfs_subvol(&args.path)?;
     }
 
     let (reconstructer, discover_tx, discover_tid)
