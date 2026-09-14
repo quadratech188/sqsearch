@@ -1,4 +1,4 @@
-use std::{ffi::{self, OsStr, OsString}, fs, io::{self, Read}, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, sync::mpsc, thread, time};
+use std::{ffi::{self, OsStr, OsString}, fs, io::{self, Read}, ops::Deref, os::{fd::FromRawFd, unix::ffi::OsStrExt}, path, sync::mpsc, thread, time};
 
 use crate::{GlobalArgs, db, discoverer, fanotify, file_handle::{FileHan, FileHandle}, filter};
 
@@ -14,24 +14,10 @@ pub struct WatchArgs {
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    Create {
-        p_fh: FileHandle,
+    Alter {
+        old_dirent: Option<(FileHandle, OsString)>,
+        new_dirent: Option<(FileHandle, OsString)>,
         fh: FileHandle,
-        name: OsString,
-        is_dir: bool
-    },
-    Delete {
-        p_fh: FileHandle,
-        fh: FileHandle,
-        name: OsString,
-        is_dir: bool
-    },
-    Rename {
-        old_p_fh: FileHandle,
-        new_p_fh: FileHandle,
-        fh: FileHandle,
-        old_name: OsString,
-        new_name: OsString,
         is_dir: bool
     },
     Discover {
@@ -100,6 +86,11 @@ fn handle_move(
             Err(db::Error::NameTaken) => {
                 let (name, p_id) = to.unwrap();
 
+                // The below behavior isn't reliable anymore.
+                // `from` could be None because we didn't know about it, or it was ignored.
+                // We choose to not report at all.
+
+                /*
                 if let None = from {
                     // touch a; touch b; mv a b
                     // This is normal behavior for updates, so don't print the warning
@@ -108,6 +99,7 @@ fn handle_move(
                         p_id, name.display()
                     );
                 }
+                */
 
                 db::delete_with_id(tx, db::get_dirent_id(tx, name, p_id)?)?;
             }
@@ -140,30 +132,13 @@ impl DbState {
 
         for event in events {
             match event {
-                Event::Create {p_fh, fh, name, is_dir } => {
+                Event::Alter { old_dirent, new_dirent, fh, is_dir } => {
                     handle_move(
-                        &tx, &self.discover_tx,
-                        fh,
-                        None,
-                        Some((name, p_fh)),
-                        *is_dir
-                    )
-                }
-                Event::Delete { p_fh, fh, name, is_dir } => {
-                    handle_move(
-                        &tx, &self.discover_tx,
-                        fh,
-                        Some((name, p_fh)),
-                        None,
-                        *is_dir
-                    )
-                }
-                Event::Rename { old_p_fh, new_p_fh, fh, old_name, new_name, is_dir } => {
-                    handle_move(
-                        &tx, &self.discover_tx,
-                        fh,
-                        Some((old_name, old_p_fh)),
-                        Some((new_name, new_p_fh)),
+                        &tx,
+                        &self.discover_tx,
+                        &fh,
+                        old_dirent.as_ref().map(|x| (x.1.deref(), x.0.deref())),
+                        new_dirent.as_ref().map(|x| (x.1.deref(), x.0.deref())),
                         *is_dir
                     )
                 }
@@ -283,57 +258,60 @@ impl FanotifyState {
             if stripped_mask == libc::FAN_CREATE | libc::FAN_DELETE {continue}
 
             if stripped_mask & libc::FAN_CREATE != 0 {
-                let (fh, (p_fh, name))
+                let (fh, new)
                     = fanotify::read_create_delete(here, &metadata);
 
                 if !self.filter.allow(fh) {continue}
 
-                self.fanotify_tx.send(Event::Create {
-                    p_fh  : p_fh.to_owned(),
-                    fh    : fh  .to_owned(),
-                    name  : name.to_owned(),
+                self.fanotify_tx.send(Event::Alter {
+                    old_dirent: None,
+                    new_dirent: Some((new.0.to_owned(), new.1.to_owned())),
+                    fh: fh.to_owned(),
                     is_dir: (metadata.mask & libc::FAN_ONDIR != 0)
                 }).expect("Channel broken");
             }
             if stripped_mask & libc::FAN_DELETE != 0 {
-                let (fh, (p_fh, name))
+                let (fh, old)
                     = fanotify::read_create_delete(here, &metadata);
 
                 if !self.filter.allow(fh) {continue}
 
-                self.fanotify_tx.send(Event::Delete {
-                    p_fh  : p_fh.to_owned(),
-                    fh    : fh  .to_owned(),
-                    name  : name.to_owned(),
+                self.fanotify_tx.send(Event::Alter {
+                    old_dirent: Some((old.0.to_owned(), old.1.to_owned())),
+                    new_dirent: None,
+                    fh: fh.to_owned(),
                     is_dir: (metadata.mask & libc::FAN_ONDIR != 0)
                 }).expect("Channel broken");
             }
             if stripped_mask & libc::FAN_RENAME != 0 {
-                let (fh, (old_p_fh, old_name), (new_p_fh, new_name))
+                let (fh, old, new)
                     = fanotify::read_rename(here, &metadata);
 
-                if !self.filter.allow(fh) {continue}
+                let mut old = Some(old);
+                let mut new = Some(new);
+                if !self.filter.allow(fh) {old = None}
+                if !self.filter.allow(fh) {new = None}
 
-                self.fanotify_tx.send(Event::Rename {
-                    old_p_fh: old_p_fh.to_owned(),
-                    new_p_fh: new_p_fh.to_owned(),
-                    fh:       fh      .to_owned(),
-                    old_name: old_name.to_owned(),
-                    new_name: new_name.to_owned(),
+                if let None = old && let None = new {continue}
+
+                self.fanotify_tx.send(Event::Alter {
+                    old_dirent: old.map(|x| (x.0.to_owned(), x.1.to_owned())),
+                    new_dirent: new.map(|x| (x.0.to_owned(), x.1.to_owned())),
+                    fh: fh.to_owned(),
                     is_dir: (metadata.mask & libc::FAN_ONDIR != 0)
                 }).expect("Channel broken");
             }
             if stripped_mask == libc::FAN_OPEN {
                 let fh = fanotify::read_open(here, &metadata);
 
-                let Some((p_fh, name)) = self.reconstructer.submit(fh) else {continue};
+                let Some(new) = self.reconstructer.submit(fh) else {continue};
 
                 if !self.filter.allow(fh) {continue}
 
                 self.fanotify_tx.send(Event::Discover {
-                    p_fh,
+                    p_fh: new.0,
                     fh: fh.to_owned(),
-                    name
+                    name: new.1,
                 }).expect("Channel broken");
             }
         }
